@@ -1,0 +1,3 @@
+# Generative scoring for all benchmarks, no log-likelihood
+
+Every Benchmark question is scored generatively: the model writes its answer (a letter, a number, or code), we extract it and compare it with the reference or run the tests. We do not use the log-likelihood multiple-choice scoring that lm-evaluation-harness uses by default for MMLU, because the Claude API does not return token log-probabilities, and comparing local models with the Reference model is the point of the project. As a result our MMLU numbers can differ from those on model cards. Compare the ranking against published results, not the absolute values.

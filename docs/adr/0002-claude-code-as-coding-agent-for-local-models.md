@@ -1,0 +1,3 @@
+# Claude Code drives local models in the Agent trial
+
+The Agent trial runs Claude Code as the Coding agent for every model, local ones included. Both Runtimes expose an Anthropic-compatible `/v1/messages` endpoint, so Claude Code reaches them through `ANTHROPIC_BASE_URL`. We chose this over Aider or other open agents because the business question is "how usable is a local model in the workflow we actually use (Claude Code)?". Keeping the agent fixed and swapping only the model isolates model quality. The trade-off: Claude Code is tuned for Claude models, so some local-model failures may come from the agent, not the model. Record these as findings, not as measurement errors.
