@@ -1,0 +1,92 @@
+# LocalAI and Ollama side by side, both loading the same Core model file.
+#
+#   docker compose up -d
+#
+# First start downloads the Model file (~6 GB) into the shared `models` volume,
+# then both Runtimes load it from there. See README.md.
+
+name: localai-vs-ollama
+
+x-nvidia-gpu: &nvidia-gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+x-core-model: &core-model
+  MODEL_FILE: Qwen3.5-9B-Q4_K_M.gguf
+  MODEL_URL: ${MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf}
+  # Optional: pin the expected checksum; the download fails if it differs.
+  MODEL_SHA256: ${MODEL_SHA256:-}
+
+services:
+  # One-shot: downloads the Core model file once and records its sha256.
+  model-fetch:
+    image: curlimages/curl:${CURL_VERSION:-8.17.0}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/scripts/fetch-model.sh"]
+    environment: *core-model
+    volumes:
+      - models:/models
+      - ./.state:/state
+      - ./docker/fetch-model.sh:/scripts/fetch-model.sh:ro
+
+  localai:
+    image: localai/localai:${LOCALAI_VERSION:-v4.12.1}-gpu-nvidia-cuda-12
+    <<: *nvidia-gpu
+    ports:
+      - "8080:8080"
+    environment:
+      LOCALAI_MODELS_PATH: /models
+      LOCALAI_BACKENDS_PATH: /backends
+      # Install the CUDA llama.cpp backend at startup instead of on first request.
+      LOCALAI_EXTERNAL_BACKENDS: llama-cpp
+    volumes:
+      - models:/models
+      - ./docker/localai/qwen3.5-9b.yaml:/models/qwen3.5-9b.yaml:ro
+      - localai-backends:/backends
+    depends_on:
+      model-fetch:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.40.16}
+    <<: *nvidia-gpu
+    ports:
+      - "11434:11434"
+    volumes:
+      - models:/models:ro
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: registers the same Model file in Ollama under the same name.
+  ollama-model:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.40.16}
+    entrypoint: ["ollama", "create", "qwen3.5-9b", "-f", "/config/Modelfile"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - models:/models:ro
+      - ./docker/ollama/Modelfile:/config/Modelfile:ro
+    depends_on:
+      model-fetch:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+
+volumes:
+  models:
+  localai-backends:
+  ollama-data:

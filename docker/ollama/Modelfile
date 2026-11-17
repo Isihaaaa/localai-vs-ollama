@@ -1,0 +1,4 @@
+# Core model for Ollama. Must load the same Model file as docker/localai/qwen3.5-9b.yaml.
+FROM /models/Qwen3.5-9B-Q4_K_M.gguf
+PARAMETER num_ctx 16384
+PARAMETER temperature 0

@@ -1,0 +1,12 @@
+# Core model for LocalAI. Must load the same Model file as docker/ollama/Modelfile.
+name: qwen3.5-9b
+backend: llama-cpp
+context_size: 16384
+gpu_layers: 99
+mmap: true
+parameters:
+  model: Qwen3.5-9B-Q4_K_M.gguf
+  temperature: 0
+template:
+  # Use the chat template embedded in the GGUF, as Ollama does.
+  use_tokenizer_template: true

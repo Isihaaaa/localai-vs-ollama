@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+
+# Local-only data (see docs/plan.md: raw responses never leave the machine)
+data/
+runs/
+.state/
+
+# Local overrides
+.env
