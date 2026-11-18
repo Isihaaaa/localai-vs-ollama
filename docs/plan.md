@@ -17,7 +17,7 @@ Build an on-premise generative AI environment with **LocalAI** and **Ollama**, c
 ## Reproducibility: anyone can run the measurements
 
 - **Supported platforms:** Windows + NVIDIA GPU (Docker Desktop/WSL2) and macOS on Apple Silicon. On macOS the Runtimes run natively (Metal), because Docker containers cannot reach the GPU there. Open WebUI and the Sample system backend can stay in Docker. Scripts detect the platform and pick the right path.
-- **Hardware tiers:** the tooling measures the memory available to models (VRAM, or unified memory on Apple Silicon) and assigns a tier: S / M / L / XL. Each tier has a fixed set of Models. The Models below are tier M. The S / L / XL sets are still to be defined.
+- **Hardware tiers:** the tooling measures the memory available to models (VRAM, or unified memory on Apple Silicon) and assigns a tier: S / M / L / XL (below 12 GB / 12–24 GB / 24–48 GB / from 48 GB; on Apple Silicon 75% of unified memory counts, the macOS default GPU share). Each tier has a fixed set of Models. The Models below are tier M. The S / L / XL sets are still to be defined.
 - **Core model:** one Model runs on every tier (proposed: Qwen3.5 9B), so any two machines can be compared directly.
 - **Run presets:**
   - `quick` (~1 h): Core model, fixed subsets, speed measurements, both Runtimes, no Agent trial.

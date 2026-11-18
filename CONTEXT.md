@@ -14,6 +14,10 @@ _Avoid_: backend, platform, engine
 The library underneath a Runtime that actually performs the model computation (e.g. llama.cpp).
 _Avoid_: backend, engine (alone), runtime
 
+**Platform** (HU: platform):
+The operating system and GPU combination a machine runs, which decides where the Runtimes run: Windows + NVIDIA GPU (Runtimes in Docker) or macOS on Apple Silicon (Runtimes native on Metal).
+_Avoid_: OS (alone), host
+
 **Hardware profile** (HU: hardverprofil):
 How the model is placed on the machine during a run: fully in VRAM, VRAM + RAM offload (part of the model in system memory), or CPU-only.
 _Avoid_: environment, setup

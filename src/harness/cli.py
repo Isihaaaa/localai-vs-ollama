@@ -1,4 +1,4 @@
-"""Command line entry point: ``uv run harness skeleton``."""
+"""Command line entry point: ``uv run harness doctor`` / ``uv run harness skeleton``."""
 
 import argparse
 import sys
@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from harness.doctor import format_checklist, run_checks
 from harness.gsm8k import ensure_test_split, load_problem
 from harness.machine import REPO_ROOT, LocalHost, describe_machine
 from harness.runtimes import LocalAI, Ollama, Runtime, RuntimeRequestFailed, RuntimeUnavailable
@@ -17,21 +18,52 @@ CORE_MODEL = "qwen3.5-9b"
 CORE_MODEL_FILE = "Qwen3.5-9B-Q4_K_M.gguf"
 # Generous: a 9B model with Thinking mode on a laptop GPU, or CPU-only, can take minutes.
 REQUEST_TIMEOUT_S = 1800
+# The doctor only asks for versions and model lists.
+DOCTOR_TIMEOUT_S = 10
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness")
     commands = parser.add_subparsers(dest="command", required=True)
+    doctor = commands.add_parser("doctor", help="Check the prerequisites of a run")
+    _add_runtime_urls(doctor)
     skeleton = commands.add_parser("skeleton", help="One GSM8K problem through both Runtimes")
     skeleton.add_argument("--index", type=int, default=0, help="GSM8K test problem index")
-    skeleton.add_argument("--localai-url", default="http://localhost:8080")
-    skeleton.add_argument("--ollama-url", default="http://localhost:11434")
+    _add_runtime_urls(skeleton)
     skeleton.add_argument("--machine-id", help="Override the derived machine id")
     skeleton.add_argument(
         "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
     )
     args = parser.parse_args(argv)
+    if args.command == "doctor":
+        return _doctor(args)
+    return _skeleton(args)
 
+
+def _add_runtime_urls(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--localai-url", default="http://localhost:8080")
+    parser.add_argument("--ollama-url", default="http://localhost:11434")
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    host = LocalHost()
+    with httpx.Client(timeout=DOCTOR_TIMEOUT_S) as http:
+        checks = run_checks(
+            host,
+            describe_machine(host),
+            [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)],
+            CORE_MODEL,
+            disk_path=str(REPO_ROOT),
+        )
+    print(format_checklist(checks))
+    if all(check.passed for check in checks):
+        print("Ready to run.")
+        return 0
+    print("Some prerequisites are missing; fix the failed checks above.", file=sys.stderr)
+    return 1
+
+
+def _skeleton(args: argparse.Namespace) -> int:
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as http:
         runtimes: list[Runtime] = [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)]
         try:

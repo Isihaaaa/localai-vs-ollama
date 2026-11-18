@@ -25,9 +25,14 @@ From the repository root in PowerShell:
 docker compose up -d
 docker compose logs -f model-fetch   # follow the download, Ctrl+C when it says "ready"
 
-# 2. Send one GSM8K problem to each Runtime and record the result.
+# 2. Check the prerequisites: Docker, GPU access, disk space, both Runtimes and the model.
+uv run harness doctor
+
+# 3. Send one GSM8K problem to each Runtime and record the result.
 uv run harness skeleton
 ```
+
+`harness doctor` prints a pass/fail checklist and exits non-zero if anything is missing. It also detects the platform (Windows + NVIDIA → Runtimes in Docker; macOS on Apple Silicon → Runtimes native on Metal) and the Hardware tier from the memory available to models: the VRAM of the largest GPU, or 75% of unified memory on Apple Silicon. S is below 12 GB, M up to 24 GB, L up to 48 GB, XL from 48 GB. Platform and tier are recorded in every result file's machine description.
 
 `docker compose up -d` does all of this:
 
