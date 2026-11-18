@@ -43,6 +43,23 @@ class Runtime(ABC):
             return False
         return any(entry.get("id", "").split(":")[0] == model for entry in response.json()["data"])
 
+    def load(self, model: str) -> None:
+        """Get the model into memory with a one-token request.
+
+        Called before the timed request, so its duration measures generation
+        only, not loading the Model file into VRAM.
+        """
+        self._request(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "temperature": 0,
+                "max_tokens": 1,
+            },
+        )
+
     def chat(self, model: str, prompt: str) -> dict[str, Any]:
         """Send one user message and return the raw JSON response."""
         response = self._request(
