@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "kind": "benchmark-run",
+  "run_id": "gsm8k-qwen3.5-9b-41230011f6bb",
+  "started_at": "2026-11-18T16:30:22.951455+00:00",
+  "model": "qwen3.5-9b",
+  "model_file": {
+    "name": "Qwen3.5-9B-Q4_K_M.gguf",
+    "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+  },
+  "thinking_mode": "model-default",
+  "benchmark": {
+    "name": "gsm8k",
+    "questions": 3
+  },
+  "machine": {
+    "machine_id": "nvidia-geforce-rtx-3080-laptop-gpu-3908f7de",
+    "os": "Windows 11 (10.0.26300)",
+    "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+    "memory_gb": 63,
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+        "vram_mb": 16384,
+        "driver": "591.44"
+      }
+    ],
+    "script_version": "0.1.0",
+    "script_commit": "f959401",
+    "platform": "windows-nvidia",
+    "runtime_path": "docker",
+    "model_memory_gb": 16.0,
+    "hardware_tier": "M",
+    "runtime_versions": {
+      "localai": "v4.12.1 (ec9274027eadd552d56f2c6c1fe86cd9216a991a)",
+      "ollama": "0.40.16"
+    }
+  },
+  "results": [
+    {
+      "runtime": "localai",
+      "answered": 3,
+      "correct": 3,
+      "failed": 0,
+      "truncated": 0,
+      "accuracy": 1.0,
+      "failures": [],
+      "raw_responses_sha256": "6ef4f5dec7f94d79f7b94d792a9cda951ca70068a07901e6281fec7820fa17ca",
+      "performance": {
+        "load_seconds": 9.335,
+        "generation_seconds": 121.418,
+        "prompt_tokens": 273,
+        "completion_tokens": 7421,
+        "tokens_per_second": 61.12
+      }
+    },
+    {
+      "runtime": "ollama",
+      "answered": 3,
+      "correct": 2,
+      "failed": 0,
+      "truncated": 1,
+      "accuracy": 0.6667,
+      "failures": [],
+      "raw_responses_sha256": "941e546442b51e2949c3ddf22895a2958fd1b00636a11cdbc4c6d5cc74276761",
+      "performance": {
+        "load_seconds": 8.794,
+        "generation_seconds": 276.168,
+        "prompt_tokens": 273,
+        "completion_tokens": 13938,
+        "tokens_per_second": 50.47
+      }
+    }
+  ]
+}
