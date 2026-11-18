@@ -6,7 +6,7 @@ the journal and asks only the questions that have no answer yet, so a run
 killed in the middle of the night continues where it stopped.
 
 Transient errors (connection drops, timeouts, HTTP 408/429/5xx) are retried
-with backoff. A question that still fails is recorded as failed and the run
+with backoff; a timeout is retried only once. A question that still fails is recorded as failed and the run
 goes on; a Runtime that stays unreachable stops the run, keeping the journal
 for the next attempt. What goes to ``results_dir`` is aggregates and a
 checksum of the raw responses, written once every question has an outcome.
@@ -40,6 +40,10 @@ BENCHMARK = "gsm8k"
 # Waits before each retry: a restarting container usually answers within two minutes.
 DEFAULT_BACKOFF_SECONDS = (10.0, 30.0, 90.0)
 TRANSIENT_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# A timed-out generation usually times out again: at temperature 0 a model that
+# thinks without end does so on every attempt, and each try costs the full
+# request timeout. So a timeout gets one retry, not the whole backoff.
+MAX_TIMEOUTS_PER_CALL = 2
 
 T = TypeVar("T")
 
@@ -151,6 +155,8 @@ def _ask(
             "generation_seconds": round(generation_seconds, 3),
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
+            # "length": cut off at the token limit, e.g. Thinking mode used up MAX_TOKENS.
+            "finish_reason": response["choices"][0].get("finish_reason"),
         }
     )
 
@@ -166,12 +172,14 @@ class _Retrying:
 
     def __call__(self, call: Callable[[], T]) -> T:
         self.attempts = 0
+        timeouts = 0
         for wait in [*self._backoff, None]:
             self.attempts += 1
             try:
                 return call()
             except (RuntimeUnavailable, RuntimeRequestFailed) as error:
-                if wait is None or not _is_transient(error):
+                timeouts += isinstance(error, RuntimeTimeout)
+                if wait is None or not _is_transient(error) or timeouts >= MAX_TIMEOUTS_PER_CALL:
                     raise
             self._sleep(wait)
         raise AssertionError("unreachable: the last attempt returns or raises")
@@ -321,6 +329,7 @@ def _aggregate(journal: _Journal, runtime: str, indices: Sequence[int]) -> dict[
         "answered": len(answered),
         "correct": correct,
         "failed": len(failed),
+        "truncated": sum(1 for o in answered if o.get("finish_reason") == "length"),
         "accuracy": round(correct / len(outcomes), 4) if outcomes else None,
         "failures": [{"index": o["index"], "error": o["error"], "attempts": o["attempts"]} for o in failed],
         "raw_responses_sha256": hashlib.sha256(checksum_lines.encode("utf-8")).hexdigest(),

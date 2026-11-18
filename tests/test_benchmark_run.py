@@ -45,9 +45,9 @@ def question_index(body: dict[str, Any]) -> int:
     return int(content.split("Question ", 1)[1].split(":", 1)[0])
 
 
-def chat_reply(content: str) -> dict[str, Any]:
+def chat_reply(content: str, finish_reason: str = "stop") -> dict[str, Any]:
     return {
-        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}],
         "usage": {"prompt_tokens": 50, "completion_tokens": 100},
     }
 
@@ -71,6 +71,7 @@ class FakeRuntimes:
         self.faults: dict[tuple[str, int], list[httpx.Response | Exception]] = {}
         self.down: set[str] = set()
         self.kill_after: int | None = None
+        self.truncated: set[tuple[str, int]] = set()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         runtime = request.url.host
@@ -94,6 +95,8 @@ class FakeRuntimes:
         if self.kill_after is not None and len(self.asked) >= self.kill_after:
             raise KeyboardInterrupt
         self.asked.append((runtime, index))
+        if (runtime, index) in self.truncated:
+            return httpx.Response(200, json=chat_reply("<think>Step 1: first I", finish_reason="length"))
         answer = 2 * index + (1 if (runtime, index) in self.wrong else 0)
         return httpx.Response(200, json=chat_reply(f"Answer: {answer}"))
 
@@ -325,3 +328,28 @@ def test_a_different_model_file_under_the_same_name_is_a_separate_run(tmp_path: 
     )
 
     assert len(fake.asked) == 2 * 2 * 5
+
+
+def test_a_timeout_is_retried_only_once_because_it_usually_repeats(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    fake.faults[("localai", 0)] = [httpx.ReadTimeout("timed out")] * 4
+    sleeps: list[float] = []
+
+    result = json.loads(run(fake, tmp_path, sleeps=sleeps).read_text())
+
+    assert sleeps == [10.0]
+    assert [(f["index"], f["attempts"]) for f in by_runtime(result)["localai"]["failures"]] == [(0, 2)]
+
+
+# Truncated responses
+
+
+def test_responses_cut_off_at_the_token_limit_are_counted_as_truncated(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    fake.truncated = {("ollama", 1), ("ollama", 4)}
+
+    result = json.loads(run(fake, tmp_path).read_text())
+
+    ollama = by_runtime(result)["ollama"]
+    assert (ollama["answered"], ollama["correct"], ollama["truncated"], ollama["failed"]) == (5, 3, 2, 0)
+    assert by_runtime(result)["localai"]["truncated"] == 0
