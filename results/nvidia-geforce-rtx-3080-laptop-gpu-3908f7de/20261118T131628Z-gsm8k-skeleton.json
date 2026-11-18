@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "walking-skeleton",
+  "started_at": "2026-11-18T13:16:28.964060+00:00",
+  "model": "qwen3.5-9b",
+  "model_file": {
+    "name": "Qwen3.5-9B-Q4_K_M.gguf",
+    "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+  },
+  "thinking_mode": "model-default",
+  "problem": {
+    "benchmark": "gsm8k",
+    "index": 5,
+    "reference": "64"
+  },
+  "machine": {
+    "machine_id": "nvidia-geforce-rtx-3080-laptop-gpu-3908f7de",
+    "os": "Windows 11 (10.0.26300)",
+    "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+    "memory_gb": 63,
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+        "vram_mb": 16384,
+        "driver": "591.44"
+      }
+    ],
+    "script_version": "0.1.0",
+    "script_commit": "f6d6644",
+    "runtime_versions": {
+      "localai": "v4.12.1 (ec9274027eadd552d56f2c6c1fe86cd9216a991a)",
+      "ollama": "0.40.16"
+    }
+  },
+  "results": [
+    {
+      "runtime": "localai",
+      "extracted": "64",
+      "correct": true,
+      "raw_response_sha256": "4310face0cca529c80553a1ca5cff7b7db46c35247b1815d4924184c248fe705"
+    },
+    {
+      "runtime": "ollama",
+      "extracted": "64",
+      "correct": true,
+      "raw_response_sha256": "2ccb916d0d1163768050b2a0605627cfc4adb3718054272abb4f930d444e12be"
+    }
+  ]
+}
