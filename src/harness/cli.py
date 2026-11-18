@@ -1,4 +1,4 @@
-"""Command line entry point: ``uv run harness doctor`` / ``uv run harness skeleton``."""
+"""Command line entry point: ``uv run harness doctor`` / ``skeleton`` / ``gsm8k``."""
 
 import argparse
 import sys
@@ -8,8 +8,9 @@ from pathlib import Path
 
 import httpx
 
+from harness.benchmark_run import RunInterrupted, run_benchmark
 from harness.doctor import format_checklist, run_checks
-from harness.gsm8k import ensure_test_split, load_problem
+from harness.gsm8k import count_problems, ensure_test_split, load_problem, load_problems
 from harness.machine import REPO_ROOT, LocalHost, describe_machine
 from harness.runtimes import LocalAI, Ollama, Runtime, RuntimeRequestFailed, RuntimeUnavailable
 from harness.skeleton import ModelFile, run_skeleton
@@ -34,9 +35,21 @@ def main(argv: list[str] | None = None) -> int:
     skeleton.add_argument(
         "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
     )
+    gsm8k = commands.add_parser(
+        "gsm8k", help="GSM8K through both Runtimes; rerun the same command to resume an interrupted run"
+    )
+    gsm8k.add_argument("--start", type=int, default=0, help="First GSM8K test problem index")
+    gsm8k.add_argument("--count", type=int, help="Number of problems (default: all from --start)")
+    _add_runtime_urls(gsm8k)
+    gsm8k.add_argument("--machine-id", help="Override the derived machine id")
+    gsm8k.add_argument(
+        "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
+    )
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor(args)
+    if args.command == "gsm8k":
+        return _gsm8k(args)
     return _skeleton(args)
 
 
@@ -85,6 +98,35 @@ def _skeleton(args: argparse.Namespace) -> int:
 
     print(f"Result written to {path.relative_to(REPO_ROOT)}")
     print(path.read_text(encoding="utf-8"))
+    return 0
+
+
+def _gsm8k(args: argparse.Namespace) -> int:
+    split = ensure_test_split(REPO_ROOT / "data" / "gsm8k" / "test.jsonl")
+    end = count_problems(split) if args.count is None else args.start + args.count
+    problems = load_problems(split, range(args.start, end))
+    with httpx.Client(timeout=REQUEST_TIMEOUT_S) as http:
+        runtimes: list[Runtime] = [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)]
+        try:
+            _wait_until_ready(runtimes, args.wait)
+            path = run_benchmark(
+                runtimes=runtimes,
+                model=CORE_MODEL,
+                model_file=ModelFile(name=CORE_MODEL_FILE, sha256=_recorded_sha256(CORE_MODEL_FILE)),
+                problems=problems,
+                machine=describe_machine(LocalHost(), machine_id=args.machine_id),
+                results_dir=REPO_ROOT / "results",
+                raw_dir=REPO_ROOT / "runs",
+                now=datetime.now(UTC),
+            )
+        except (RuntimeUnavailable, RuntimeRequestFailed, RunInterrupted) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("Interrupted. Run the same command again to continue where it stopped.", file=sys.stderr)
+            return 130
+
+    print(f"Result written to {path.relative_to(REPO_ROOT)}")
     return 0
 
 

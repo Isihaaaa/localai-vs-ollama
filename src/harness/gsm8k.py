@@ -1,6 +1,7 @@
 """GSM8K Benchmark: the official test split (1,319 problems)."""
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -28,12 +29,23 @@ class Problem:
 
 
 def load_problem(path: Path, index: int) -> Problem:
+    return load_problems(path, [index])[0]
+
+
+def load_problems(path: Path, indices: Sequence[int]) -> list[Problem]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if not 0 <= index < len(lines):
-        raise IndexError(f"GSM8K index {index} is out of range: the file has {len(lines)} problems")
-    row = json.loads(lines[index])
-    reference_text = row["answer"].rsplit("####", 1)[1].strip().replace(",", "")
-    return Problem(index=index, question=row["question"], reference=Decimal(reference_text))
+    problems = []
+    for index in indices:
+        if not 0 <= index < len(lines):
+            raise IndexError(f"GSM8K index {index} is out of range: the file has {len(lines)} problems")
+        row = json.loads(lines[index])
+        reference_text = row["answer"].rsplit("####", 1)[1].strip().replace(",", "")
+        problems.append(Problem(index=index, question=row["question"], reference=Decimal(reference_text)))
+    return problems
+
+
+def count_problems(path: Path) -> int:
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
 def build_prompt(problem: Problem) -> str:

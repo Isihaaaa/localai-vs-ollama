@@ -17,8 +17,16 @@ class RuntimeUnavailable(RuntimeError):
     """The Runtime did not answer. Check `docker compose ps` and the container logs."""
 
 
+class RuntimeTimeout(RuntimeUnavailable):
+    """The Runtime accepted the request but did not answer in time."""
+
+
 class RuntimeRequestFailed(RuntimeError):
     """The Runtime answered with an error status."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class Runtime(ABC):
@@ -82,6 +90,10 @@ class Runtime(ABC):
     def _request(self, method: str, path: str, *, check: bool = True, **kwargs: Any) -> httpx.Response:
         try:
             response = self._http.request(method, f"{self._base_url}{path}", **kwargs)
+        except httpx.TimeoutException as error:
+            raise RuntimeTimeout(
+                f"{self.name} {method} {path} timed out ({type(error).__name__})."
+            ) from error
         except httpx.TransportError as error:
             raise RuntimeUnavailable(
                 f"{self.name} at {self._base_url} is not reachable ({error}). "
@@ -90,7 +102,8 @@ class Runtime(ABC):
         if check and response.is_error:
             raise RuntimeRequestFailed(
                 f"{self.name} {method} {path} failed with HTTP {response.status_code}: "
-                f"{response.text[:500]}. Check `docker compose logs {self.name}`."
+                f"{response.text[:500]}. Check `docker compose logs {self.name}`.",
+                status_code=response.status_code,
             )
         return response
 

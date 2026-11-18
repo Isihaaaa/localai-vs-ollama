@@ -49,6 +49,18 @@ The harness waits until both Runtimes list the model, then queries them **one af
 
 Options: `--index N` picks another GSM8K problem, `--machine-id NAME` overrides the derived machine id.
 
+### Longer runs: resumable and fault-tolerant
+
+```powershell
+uv run harness gsm8k --count 50
+```
+
+asks both Runtimes the first 50 GSM8K test problems (`--start N` picks the first index; without `--count` it runs the whole 1,319-problem split). Such runs can take all night, so:
+
+- **Resume:** progress is journaled after every answer under `runs/<machine-id>/<run-id>/`. If the run is killed (Ctrl+C, crash, reboot), run **the same command** again: finished questions are not asked again. The run id comes from the model, the Model file (name and sha256), the Runtimes and the exact prompts, so different options, or a re-downloaded Model file, start a separate run.
+- **Retries:** connection drops, timeouts and HTTP 408/429/5xx are retried after 10, 30 and 90 seconds. A question that still fails is recorded as failed (it counts as incorrect) and the run goes on; resuming asks failed questions again. If a Runtime stays unreachable, the run stops and keeps its progress.
+- **What is committed:** `results/<machine-id>/<start time>-gsm8k-qwen3.5-9b.json` holds per-Runtime aggregates (correct, failed with their errors, accuracy, token counts, throughput) and a checksum over the raw responses. The raw responses and the journal stay in the git-ignored `runs/`. To verify the checksum, take the answered questions in index order and hash the lines `<index> <sha256 of runs/…/<runtime>/<index>.json>\n` with sha256.
+
 ### Troubleshooting
 
 - **The GPU is not used:** run `docker compose logs localai ollama` and look for CUDA in the output. Re-check the `nvidia-smi` test above.
