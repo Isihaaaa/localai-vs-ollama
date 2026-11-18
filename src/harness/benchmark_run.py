@@ -65,6 +65,7 @@ def run_benchmark(
     backoff_seconds: Sequence[float] = DEFAULT_BACKOFF_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.perf_counter,
+    progress: Callable[[str], None] = lambda line: None,
 ) -> Path:
     """Ask every Runtime every problem, resuming a previous attempt if there is one.
 
@@ -72,24 +73,34 @@ def run_benchmark(
     Runtimes and the exact prompts), so rerunning the same command resumes
     it. Runtimes are queried one after the other and each unloads the model
     before the next starts. Returns the path of the result file.
+
+    ``progress`` receives one human-readable line per question, retry and
+    resumed Runtime, for a person watching a long run.
     """
     run_dir = raw_dir / machine.machine_id / _run_id(model, model_file, runtimes, problems)
     manifest = _Manifest.open(run_dir / "manifest.json", now)
     journal = _Journal(run_dir / "journal.jsonl")
-    retrying = _Retrying(backoff_seconds, sleep)
+    retrying = _Retrying(backoff_seconds, sleep, progress)
 
     for runtime in runtimes:
         pending = [p for p in problems if journal.status(runtime.name, p.index) != "answered"]
+        done = len(problems) - len(pending)
+        if done:
+            progress(
+                f"{runtime.name}: {done} of {len(problems)} already answered, "
+                f"asking the remaining {len(pending)}"
+            )
         if not pending:
             continue
         try:
-            manifest.record_version(runtime.name, retrying(runtime.version))
+            manifest.record_version(runtime.name, retrying(runtime.version, f"{runtime.name} version"))
             load_started = clock()
-            retrying(lambda: runtime.load(model))
+            retrying(lambda: runtime.load(model), f"{runtime.name} loading {model}")
             journal.append({"type": "load", "runtime": runtime.name, "seconds": round(clock() - load_started, 3)})
-            for problem in pending:
-                _ask(runtime, model, problem, run_dir, journal, retrying, clock)
-            retrying(lambda: runtime.unload(model))
+            for position, problem in enumerate(pending, start=done + 1):
+                outcome = _ask(runtime, model, problem, run_dir, journal, retrying, clock)
+                progress(f"{runtime.name} {position}/{len(problems)} #{problem.index}: {_describe(outcome)}")
+            retrying(lambda: runtime.unload(model), f"{runtime.name} unloading {model}")
         except RuntimeUnavailable as error:
             raise RunInterrupted(
                 f"{error} The run stopped; its progress is kept in {run_dir}. "
@@ -114,7 +125,8 @@ def _ask(
     journal: "_Journal",
     retrying: "_Retrying",
     clock: Callable[[], float],
-) -> None:
+) -> dict[str, Any]:
+    """Ask one question and journal its outcome, which is also returned."""
     prompt = build_prompt(problem)
 
     def timed_chat() -> tuple[dict[str, Any], float]:
@@ -124,10 +136,10 @@ def _ask(
         return response, clock() - started
 
     try:
-        response, generation_seconds = retrying(timed_chat)
+        response, generation_seconds = retrying(timed_chat, f"{runtime.name} #{problem.index}")
     except (RuntimeTimeout, RuntimeRequestFailed) as error:
         # The Runtime is up, but this question keeps failing: record it and go on.
-        journal.append(
+        return journal.append(
             {
                 "type": "question",
                 "runtime": runtime.name,
@@ -137,13 +149,12 @@ def _ask(
                 "attempts": retrying.attempts,
             }
         )
-        return
 
     raw_bytes = json.dumps(response, indent=2, ensure_ascii=False).encode("utf-8")
     _write_atomically(run_dir / runtime.name / f"{problem.index}.json", raw_bytes)
     extracted = extract_answer(message_content(response))
     usage = response.get("usage") or {}
-    journal.append(
+    return journal.append(
         {
             "type": "question",
             "runtime": runtime.name,
@@ -157,20 +168,41 @@ def _ask(
             "completion_tokens": usage.get("completion_tokens"),
             # "length": cut off at the token limit, e.g. Thinking mode used up MAX_TOKENS.
             "finish_reason": response["choices"][0].get("finish_reason"),
+            "attempts": retrying.attempts,
         }
     )
+
+
+def _describe(outcome: dict[str, Any]) -> str:
+    if outcome["status"] == "failed":
+        return f"failed after {outcome['attempts']} attempt(s): {outcome['error']}"
+    verdict = "correct" if outcome["correct"] else "wrong"
+    tokens = outcome["completion_tokens"]
+    details = [f"{outcome['generation_seconds']:.1f} s"] + ([f"{tokens} tokens"] if tokens else [])
+    if outcome["finish_reason"] == "length":
+        details.append("truncated at the token limit")
+    if outcome["attempts"] > 1:
+        details.append(f"{outcome['attempts']} attempts")
+    return f"{verdict} ({', '.join(details)})"
 
 
 class _Retrying:
     """Calls a Runtime, retrying transient errors after each backoff wait."""
 
-    def __init__(self, backoff_seconds: Sequence[float], sleep: Callable[[float], None]) -> None:
+    def __init__(
+        self,
+        backoff_seconds: Sequence[float],
+        sleep: Callable[[float], None],
+        progress: Callable[[str], None],
+    ) -> None:
         self._backoff = list(backoff_seconds)
         self._sleep = sleep
+        self._progress = progress
         self.attempts = 0
         """How many attempts the latest call made, the failed ones included."""
 
-    def __call__(self, call: Callable[[], T]) -> T:
+    def __call__(self, call: Callable[[], T], what: str) -> T:
+        """Run ``call``; ``what`` names it in the progress lines about retries."""
         self.attempts = 0
         timeouts = 0
         for wait in [*self._backoff, None]:
@@ -181,6 +213,7 @@ class _Retrying:
                 timeouts += isinstance(error, RuntimeTimeout)
                 if wait is None or not _is_transient(error) or timeouts >= MAX_TIMEOUTS_PER_CALL:
                     raise
+                self._progress(f"{what}: {error} Retrying in {wait:g} s.")
             self._sleep(wait)
         raise AssertionError("unreachable: the last attempt returns or raises")
 
@@ -212,13 +245,14 @@ class _Journal:
         if lines[-1]:
             _write_atomically(self._path, "".join(line + "\n" for line in complete).encode("utf-8"))
 
-    def append(self, record: dict[str, Any]) -> None:
+    def append(self, record: dict[str, Any]) -> dict[str, Any]:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a", encoding="utf-8") as journal:
             journal.write(json.dumps(record, ensure_ascii=False) + "\n")
             journal.flush()
             os.fsync(journal.fileno())
         self.records.append(record)
+        return record
 
     def outcomes(self, runtime: str) -> dict[int, dict[str, Any]]:
         """The latest outcome of every question this Runtime was asked."""
@@ -230,9 +264,10 @@ class _Journal:
         outcome = self.outcomes(runtime).get(index)
         return None if outcome is None else str(outcome["status"])
 
-    def last_load_seconds(self, runtime: str) -> float | None:
+    def cold_load_seconds(self, runtime: str) -> float | None:
+        """The first load of the run: a resumed run can find the model still in memory."""
         loads = [r["seconds"] for r in self.records if r["type"] == "load" and r["runtime"] == runtime]
-        return loads[-1] if loads else None
+        return loads[0] if loads else None
 
 
 class _Manifest:
@@ -329,11 +364,13 @@ def _aggregate(journal: _Journal, runtime: str, indices: Sequence[int]) -> dict[
         "answered": len(answered),
         "correct": correct,
         "failed": len(failed),
+        # Attempts beyond the first; journals from before attempts were recorded count as none.
+        "retries": sum(o.get("attempts", 1) - 1 for o in outcomes),
         "truncated": sum(1 for o in answered if o.get("finish_reason") == "length"),
         "accuracy": round(correct / len(outcomes), 4) if outcomes else None,
         "failures": [{"index": o["index"], "error": o["error"], "attempts": o["attempts"]} for o in failed],
         "raw_responses_sha256": hashlib.sha256(checksum_lines.encode("utf-8")).hexdigest(),
-        "performance": _performance(answered, journal.last_load_seconds(runtime)),
+        "performance": _performance(answered, journal.cold_load_seconds(runtime)),
     }
 
 

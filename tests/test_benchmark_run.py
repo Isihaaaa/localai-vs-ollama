@@ -62,7 +62,8 @@ class FakeRuntimes:
     otherwise. ``faults`` maps (runtime, question index) to a list of responses
     or exceptions that are played, one per request, before the real answer.
     ``kill_after`` stops the process (as Ctrl+C or a crash would) once that many
-    questions have been answered.
+    questions have been answered. ``seconds`` is a fake clock: loading the
+    model takes ``load_seconds`` and every answer one second.
     """
 
     def __init__(self) -> None:
@@ -72,6 +73,9 @@ class FakeRuntimes:
         self.down: set[str] = set()
         self.kill_after: int | None = None
         self.truncated: set[tuple[str, int]] = set()
+        self.seconds = 0.0
+        self.load_seconds = 9.0
+        self.progress: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         runtime = request.url.host
@@ -84,6 +88,7 @@ class FakeRuntimes:
             return httpx.Response(200, json={})
         body = json.loads(request.content)
         if body.get("max_tokens") == 1:  # warm-up
+            self.seconds += self.load_seconds
             return httpx.Response(200, json=chat_reply("Hello"))
         index = question_index(body)
         pending = self.faults.get((runtime, index))
@@ -95,6 +100,7 @@ class FakeRuntimes:
         if self.kill_after is not None and len(self.asked) >= self.kill_after:
             raise KeyboardInterrupt
         self.asked.append((runtime, index))
+        self.seconds += 1.0
         if (runtime, index) in self.truncated:
             return httpx.Response(200, json=chat_reply("<think>Step 1: first I", finish_reason="length"))
         answer = 2 * index + (1 if (runtime, index) in self.wrong else 0)
@@ -120,6 +126,8 @@ def run(
         now=now,
         backoff_seconds=BACKOFF,
         sleep=(sleeps if sleeps is not None else []).append,
+        clock=lambda: fake.seconds,
+        progress=fake.progress.append,
     )
 
 
@@ -353,3 +361,50 @@ def test_responses_cut_off_at_the_token_limit_are_counted_as_truncated(tmp_path:
     ollama = by_runtime(result)["ollama"]
     assert (ollama["answered"], ollama["correct"], ollama["truncated"], ollama["failed"]) == (5, 3, 2, 0)
     assert by_runtime(result)["localai"]["truncated"] == 0
+
+
+# What a person watching a long run sees
+
+
+def test_the_cold_load_time_is_kept_when_a_resumed_run_finds_the_model_still_loaded(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    fake.kill_after = 2
+    with pytest.raises(KeyboardInterrupt):
+        run(fake, tmp_path)
+    fake.kill_after = None
+    fake.load_seconds = 0.3  # the killed run left the model in memory
+
+    result = json.loads(run(fake, tmp_path, now=RESTART).read_text())
+
+    assert by_runtime(result)["localai"]["performance"]["load_seconds"] == 9.0
+
+
+def test_retries_are_counted_in_the_results(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    fake.faults[("ollama", 1)] = [unavailable(500), unavailable(503)]
+    fake.faults[("ollama", 3)] = [unavailable(500)]
+    fake.faults[("localai", 0)] = [httpx.Response(400, json={"error": "bad request"})]
+
+    result = json.loads(run(fake, tmp_path).read_text())
+
+    assert by_runtime(result)["ollama"]["retries"] == 3
+    assert by_runtime(result)["localai"]["retries"] == 0
+
+
+def test_progress_reports_every_question_retry_and_resume(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    fake.kill_after = 2
+    with pytest.raises(KeyboardInterrupt):
+        run(fake, tmp_path)
+    fake.kill_after = None
+    fake.faults[("localai", 3)] = [unavailable(503)]
+    fake.wrong = {("localai", 4)}
+    fake.progress.clear()
+
+    run(fake, tmp_path, now=RESTART)
+
+    localai = [line for line in fake.progress if line.startswith("localai")]
+    assert "2 of 5 already answered" in localai[0]
+    assert any("#2" in line and "3/5" in line and "correct" in line for line in localai)
+    assert any("#3" in line and "Retrying in 10 s" in line and "503" in line for line in localai)
+    assert any("#4" in line and "5/5" in line and "wrong" in line for line in localai)

@@ -118,6 +118,7 @@ def _gsm8k(args: argparse.Namespace) -> int:
                 results_dir=REPO_ROOT / "results",
                 raw_dir=REPO_ROOT / "runs",
                 now=datetime.now(UTC),
+                progress=_print_progress,
             )
         except (RuntimeUnavailable, RuntimeRequestFailed, RunInterrupted) as error:
             print(f"error: {error}", file=sys.stderr)
@@ -128,6 +129,10 @@ def _gsm8k(args: argparse.Namespace) -> int:
 
     print(f"Result written to {path.relative_to(REPO_ROOT)}")
     return 0
+
+
+def _print_progress(line: str) -> None:
+    print(f"{datetime.now():%H:%M:%S} {line}", file=sys.stderr, flush=True)
 
 
 def _wait_until_ready(runtimes: list[Runtime], timeout_s: int) -> None:
