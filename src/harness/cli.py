@@ -11,9 +11,10 @@ import httpx
 from harness.benchmark_run import RunInterrupted, run_benchmark
 from harness.doctor import format_checklist, run_checks
 from harness.gsm8k import count_problems, ensure_test_split, load_problem, load_problems
-from harness.machine import REPO_ROOT, LocalHost, describe_machine
+from harness.machine import REPO_ROOT, LocalHost, MachineDescription, describe_machine
+from harness.model_file import ModelFile
 from harness.runtimes import LocalAI, Ollama, Runtime, RuntimeRequestFailed, RuntimeUnavailable
-from harness.skeleton import ModelFile, run_skeleton
+from harness.skeleton import run_skeleton
 
 CORE_MODEL = "qwen3.5-9b"
 CORE_MODEL_FILE = "Qwen3.5-9B-Q4_K_M.gguf"
@@ -30,21 +31,13 @@ def main(argv: list[str] | None = None) -> int:
     _add_runtime_urls(doctor)
     skeleton = commands.add_parser("skeleton", help="One GSM8K problem through both Runtimes")
     skeleton.add_argument("--index", type=int, default=0, help="GSM8K test problem index")
-    _add_runtime_urls(skeleton)
-    skeleton.add_argument("--machine-id", help="Override the derived machine id")
-    skeleton.add_argument(
-        "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
-    )
+    _add_run_arguments(skeleton)
     gsm8k = commands.add_parser(
         "gsm8k", help="GSM8K through both Runtimes; rerun the same command to resume an interrupted run"
     )
     gsm8k.add_argument("--start", type=int, default=0, help="First GSM8K test problem index")
     gsm8k.add_argument("--count", type=int, help="Number of problems (default: all from --start)")
-    _add_runtime_urls(gsm8k)
-    gsm8k.add_argument("--machine-id", help="Override the derived machine id")
-    gsm8k.add_argument(
-        "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
-    )
+    _add_run_arguments(gsm8k)
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor(args)
@@ -58,13 +51,38 @@ def _add_runtime_urls(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ollama-url", default="http://localhost:11434")
 
 
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    """The options of every command that sends questions to the Runtimes."""
+    _add_runtime_urls(parser)
+    parser.add_argument("--machine-id", help="Override the derived machine id")
+    parser.add_argument(
+        "--wait", type=int, default=600, help="Seconds to wait for the Runtimes to list the model"
+    )
+
+
+def _runtimes(http: httpx.Client, args: argparse.Namespace) -> list[Runtime]:
+    return [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)]
+
+
+def _gsm8k_split() -> Path:
+    return ensure_test_split(REPO_ROOT / "data" / "gsm8k" / "test.jsonl")
+
+
+def _core_model_file() -> ModelFile:
+    return ModelFile(name=CORE_MODEL_FILE, sha256=_recorded_sha256(CORE_MODEL_FILE))
+
+
+def _machine(args: argparse.Namespace) -> MachineDescription:
+    return describe_machine(LocalHost(), machine_id=args.machine_id)
+
+
 def _doctor(args: argparse.Namespace) -> int:
     host = LocalHost()
     with httpx.Client(timeout=DOCTOR_TIMEOUT_S) as http:
         checks = run_checks(
             host,
             describe_machine(host),
-            [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)],
+            _runtimes(http, args),
             CORE_MODEL,
             disk_path=str(REPO_ROOT),
         )
@@ -78,16 +96,16 @@ def _doctor(args: argparse.Namespace) -> int:
 
 def _skeleton(args: argparse.Namespace) -> int:
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as http:
-        runtimes: list[Runtime] = [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)]
+        runtimes = _runtimes(http, args)
         try:
             _wait_until_ready(runtimes, args.wait)
-            problem = load_problem(ensure_test_split(REPO_ROOT / "data" / "gsm8k" / "test.jsonl"), args.index)
+            problem = load_problem(_gsm8k_split(), args.index)
             path = run_skeleton(
                 runtimes=runtimes,
                 model=CORE_MODEL,
-                model_file=ModelFile(name=CORE_MODEL_FILE, sha256=_recorded_sha256(CORE_MODEL_FILE)),
+                model_file=_core_model_file(),
                 problem=problem,
-                machine=describe_machine(LocalHost(), machine_id=args.machine_id),
+                machine=_machine(args),
                 results_dir=REPO_ROOT / "results",
                 raw_dir=REPO_ROOT / "runs",
                 now=datetime.now(UTC),
@@ -102,19 +120,19 @@ def _skeleton(args: argparse.Namespace) -> int:
 
 
 def _gsm8k(args: argparse.Namespace) -> int:
-    split = ensure_test_split(REPO_ROOT / "data" / "gsm8k" / "test.jsonl")
+    split = _gsm8k_split()
     end = count_problems(split) if args.count is None else args.start + args.count
     problems = load_problems(split, range(args.start, end))
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as http:
-        runtimes: list[Runtime] = [LocalAI(http, args.localai_url), Ollama(http, args.ollama_url)]
+        runtimes = _runtimes(http, args)
         try:
             _wait_until_ready(runtimes, args.wait)
             path = run_benchmark(
                 runtimes=runtimes,
                 model=CORE_MODEL,
-                model_file=ModelFile(name=CORE_MODEL_FILE, sha256=_recorded_sha256(CORE_MODEL_FILE)),
+                model_file=_core_model_file(),
                 problems=problems,
-                machine=describe_machine(LocalHost(), machine_id=args.machine_id),
+                machine=_machine(args),
                 results_dir=REPO_ROOT / "results",
                 raw_dir=REPO_ROOT / "runs",
                 now=datetime.now(UTC),

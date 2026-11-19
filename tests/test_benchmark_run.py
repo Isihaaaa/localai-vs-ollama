@@ -11,28 +11,15 @@ import pytest
 
 from harness.benchmark_run import RunInterrupted, run_benchmark
 from harness.gsm8k import Problem
-from harness.machine import Gpu, MachineDescription
+from harness.model_file import ModelFile
 from harness.runtimes import LocalAI, Ollama
-from harness.skeleton import ModelFile
 
-LOCALAI_URL = "http://localai:8080"
-OLLAMA_URL = "http://ollama:11434"
-MODEL = "qwen3.5-9b"
+from fakes import LOCALAI_URL, MACHINE, MODEL, MODEL_FILE, OLLAMA_URL, chat_reply
 
 PROBLEMS = [
     Problem(index=i, question=f"Question {i}: what is {i} + {i}?", reference=Decimal(2 * i))
     for i in range(5)
 ]
-MACHINE = MachineDescription(
-    machine_id="rtx-3080-test",
-    os="Windows 11",
-    cpu="i9",
-    memory_gb=64,
-    gpus=[Gpu("NVIDIA GeForce RTX 3080 Laptop GPU", 16384, "581.57")],
-    script_version="0.1.0",
-    script_commit="abc1234",
-)
-MODEL_FILE = ModelFile(name="Qwen3.5-9B-Q4_K_M.gguf", sha256="03b747")
 FIRST_START = datetime(2026, 11, 18, 22, 0, tzinfo=UTC)
 RESTART = datetime(2026, 11, 19, 7, 30, tzinfo=UTC)
 
@@ -43,13 +30,6 @@ BACKOFF = [10.0, 30.0, 90.0]
 def question_index(body: dict[str, Any]) -> int:
     content: str = body["messages"][0]["content"]
     return int(content.split("Question ", 1)[1].split(":", 1)[0])
-
-
-def chat_reply(content: str, finish_reason: str = "stop") -> dict[str, Any]:
-    return {
-        "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}],
-        "usage": {"prompt_tokens": 50, "completion_tokens": 100},
-    }
 
 
 Fault = Callable[[httpx.Request], httpx.Response]
