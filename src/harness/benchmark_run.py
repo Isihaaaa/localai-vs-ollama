@@ -1,4 +1,4 @@
-"""Resumable, fault-tolerant Benchmark runs.
+"""Resumable, fault-tolerant Runtime comparisons.
 
 A run keeps its progress in a journal under ``raw_dir`` (local only, ignored
 by git), next to the raw model responses. Starting the same run again reads
@@ -61,11 +61,27 @@ class RunInterrupted(RuntimeError):
 
 @dataclass(frozen=True)
 class RunConfiguration:
-    """The fixed parameters of one Benchmark run, which also identify it for resuming.
+    """The fixed parameters of one run: one Runtime answering one Benchmark.
 
-    Thinking mode and Context window join here with #4; whatever is added
-    must also go into ``run_id``, or a run with a different setting would
-    resume this one.
+    The machine is not part of it: it describes where the run happens, not
+    what is run, and results are already kept apart per machine.
+    """
+
+    model: str
+    model_file: ModelFile
+    runtime: Runtime
+    problems: Sequence[Problem]
+    benchmark: str = BENCHMARK
+
+
+@dataclass(frozen=True)
+class RuntimeComparison:
+    """One Benchmark with one Model file asked of every Runtime on one machine.
+
+    It is one Run configuration per Runtime, identical except for the
+    Runtime, and its ``run_id`` identifies it for resuming. Thinking mode
+    and Context window join with #4; whatever is added must also go into
+    ``run_id``, or a run with a different setting would resume this one.
     """
 
     model: str
@@ -73,6 +89,12 @@ class RunConfiguration:
     runtimes: Sequence[Runtime]
     problems: Sequence[Problem]
     benchmark: str = BENCHMARK
+
+    def configurations(self) -> list[RunConfiguration]:
+        return [
+            RunConfiguration(self.model, self.model_file, runtime, self.problems, self.benchmark)
+            for runtime in self.runtimes
+        ]
 
     def run_id(self) -> str:
         configuration = {
@@ -195,7 +217,7 @@ def run_benchmark(
 ) -> Path:
     """Ask every Runtime every problem, resuming a previous attempt if there is one.
 
-    The run is identified by its Run configuration (model, Model file,
+    The Runtime comparison is identified by its run id (model, Model file,
     Runtimes and the exact prompts), so rerunning the same command resumes
     it. Runtimes are queried one after the other and each unloads the model
     before the next starts. Returns the path of the result file.
@@ -203,13 +225,14 @@ def run_benchmark(
     ``progress`` receives one human-readable line per question, retry and
     resumed Runtime, for a person watching a long run.
     """
-    configuration = RunConfiguration(model, model_file, runtimes, problems)
-    run_dir = raw_dir / machine.machine_id / configuration.run_id()
+    comparison = RuntimeComparison(model, model_file, runtimes, problems)
+    run_dir = raw_dir / machine.machine_id / comparison.run_id()
     manifest = _Manifest.open(run_dir / "manifest.json", now)
     journal = _Journal(run_dir / "journal.jsonl")
     retrying = _Retrying(backoff_seconds, sleep, progress)
 
-    for runtime in runtimes:
+    for configuration in comparison.configurations():
+        runtime = configuration.runtime
         pending = [p for p in problems if not journal.is_answered(runtime.name, p.index)]
         done = len(problems) - len(pending)
         if done:
@@ -234,8 +257,8 @@ def run_benchmark(
                 "Run the same command again to continue where it stopped."
             ) from error
 
-    result = _result(configuration, manifest, journal, machine, run_dir)
-    name = f"{stamp(manifest.started_at)}-{configuration.benchmark}-{model}.json"
+    result = _result(comparison, manifest, journal, machine, run_dir)
+    name = f"{stamp(manifest.started_at)}-{comparison.benchmark}-{model}.json"
     return write_result(results_dir / machine.machine_id / name, result)
 
 
@@ -425,22 +448,22 @@ def _write_atomically(path: Path, content: bytes) -> None:
 
 
 def _result(
-    configuration: RunConfiguration,
+    comparison: RuntimeComparison,
     manifest: _Manifest,
     journal: _Journal,
     machine: MachineDescription,
     run_dir: Path,
 ) -> dict[str, Any]:
-    indices = [p.index for p in configuration.problems]
+    indices = [p.index for p in comparison.problems]
     return {
         "schema_version": RUN_SCHEMA_VERSION,
         "kind": "benchmark-run",
         "run_id": run_dir.name,
         "started_at": manifest.started_at.isoformat(),
-        **model_fields(configuration.model, configuration.model_file),
-        "benchmark": {"name": configuration.benchmark, "questions": len(indices)},
+        **model_fields(comparison.model, comparison.model_file),
+        "benchmark": {"name": comparison.benchmark, "questions": len(indices)},
         "machine": machine_field(machine, manifest.runtime_versions),
-        "results": [_aggregate(journal, runtime.name, indices) for runtime in configuration.runtimes],
+        "results": [_aggregate(journal, runtime.name, indices) for runtime in comparison.runtimes],
     }
 
 
