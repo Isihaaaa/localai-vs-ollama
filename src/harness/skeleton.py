@@ -17,7 +17,7 @@ from harness.results import (
     tokens_per_second,
     write_result,
 )
-from harness.runtimes import Runtime
+from harness.runtimes import Runtime, ThinkingMode
 
 # 2: per-Runtime performance (load and generation time, token counts, throughput).
 RESULT_SCHEMA_VERSION = 2
@@ -80,7 +80,7 @@ def run_skeleton(
         "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "walking-skeleton",
         "started_at": now.isoformat(),
-        **model_fields(model, model_file),
+        **model_fields(model, model_file, ThinkingMode.ON),
         "problem": {
             "benchmark": "gsm8k",
             "index": problem.index,

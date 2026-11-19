@@ -10,10 +10,17 @@ import httpx
 
 from harness.benchmark_run import RunInterrupted, run_benchmark
 from harness.doctor import format_checklist, run_checks
-from harness.gsm8k import count_problems, ensure_test_split, load_problem, load_problems
+from harness.gsm8k import count_problems, ensure_test_split, load_problem, load_problems, select_problems
 from harness.machine import REPO_ROOT, LocalHost, MachineDescription, describe_machine
 from harness.model_file import ModelFile
-from harness.runtimes import LocalAI, Ollama, Runtime, RuntimeRequestFailed, RuntimeUnavailable
+from harness.runtimes import (
+    LocalAI,
+    Ollama,
+    Runtime,
+    RuntimeRequestFailed,
+    RuntimeUnavailable,
+    ThinkingMode,
+)
 from harness.skeleton import run_skeleton
 
 CORE_MODEL = "qwen3.5-9b"
@@ -35,8 +42,23 @@ def main(argv: list[str] | None = None) -> int:
     gsm8k = commands.add_parser(
         "gsm8k", help="GSM8K through both Runtimes; rerun the same command to resume an interrupted run"
     )
-    gsm8k.add_argument("--start", type=int, default=0, help="First GSM8K test problem index")
-    gsm8k.add_argument("--count", type=int, help="Number of problems (default: all from --start)")
+    gsm8k.add_argument(
+        "--thinking",
+        choices=[mode.value for mode in ThinkingMode],
+        default=ThinkingMode.ON.value,
+        help="Thinking mode: let the model reason before answering, or not (default: on)",
+    )
+    gsm8k.add_argument(
+        "--subset", type=int, help="A fixed, reproducible subset of this many problems (default: full split)"
+    )
+    gsm8k.add_argument("--start", type=int, help="First GSM8K test problem index of a range")
+    gsm8k.add_argument("--count", type=int, help="Number of problems in the range (default: all from --start)")
+    gsm8k.add_argument(
+        "--runtime",
+        action="append",
+        choices=[LocalAI.name, Ollama.name],
+        help="Ask only this Runtime; repeat for several (default: all)",
+    )
     _add_run_arguments(gsm8k)
     args = parser.parse_args(argv)
     if args.command == "doctor":
@@ -121,17 +143,25 @@ def _skeleton(args: argparse.Namespace) -> int:
 
 def _gsm8k(args: argparse.Namespace) -> int:
     split = _gsm8k_split()
-    end = count_problems(split) if args.count is None else args.start + args.count
-    problems = load_problems(split, range(args.start, end))
+    try:
+        indices, selection = select_problems(
+            count_problems(split), subset=args.subset, start=args.start, count=args.count
+        )
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    problems = load_problems(split, indices)
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as http:
-        runtimes = _runtimes(http, args)
+        runtimes = [r for r in _runtimes(http, args) if not args.runtime or r.name in args.runtime]
         try:
             _wait_until_ready(runtimes, args.wait)
             path = run_benchmark(
                 runtimes=runtimes,
                 model=CORE_MODEL,
                 model_file=_core_model_file(),
+                thinking_mode=ThinkingMode(args.thinking),
                 problems=problems,
+                selection=selection,
                 machine=_machine(args),
                 results_dir=REPO_ROOT / "results",
                 raw_dir=REPO_ROOT / "runs",

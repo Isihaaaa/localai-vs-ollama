@@ -73,7 +73,7 @@ All fixed parameters of one run: Model file, Runtime (or Reference model), Hardw
 _Avoid_: setup, run, settings
 
 **Runtime comparison** (HU: futtatókörnyezet-összehasonlítás):
-One Benchmark with one Model file asked of every Runtime on one machine: one Run configuration per Runtime, identical except for the Runtime.
+One Benchmark with one Model file asked of every Runtime on one machine: one Run configuration per Runtime, identical except for the Runtime. Measuring accuracy on a single Runtime is the same run with only that Runtime's Run configuration.
 _Avoid_: benchmark run, comparison run
 
 **Run preset** (HU: mérési csomag):
@@ -311,19 +311,19 @@ sequenceDiagram
     participant O as Ollama
     participant R as results/ (committed)
 
-    P->>H: uv run harness gsm8k [--start N --count M]
+    P->>H: uv run harness gsm8k [--subset N | --start N --count M] [--thinking on|off] [--runtime R]
     H->>H: load GSM8K problems, describe machine, read Model file sha256
     H->>L: GET /v1/models until the model is listed
     H->>O: GET /v1/models until the model is listed
     H->>J: open manifest + journal for this Runtime comparison (run id)
-    Note over H,J: run id = hash of Benchmark, Model, Model file,<br/>Runtimes, max_tokens and the exact prompts.<br/>Same command again = resume.
+    Note over H,J: run id = hash of Benchmark, Model, Model file,<br/>Runtimes, Thinking mode, max_tokens and the exact prompts.<br/>Same command again = resume.
 
     loop each Runtime, strictly one after the other
         H->>J: skip questions already answered
         H->>L: GET version
         H->>L: warm-up request (1 token) = load time
         loop each pending question
-            H->>L: POST /v1/chat/completions (temperature 0, max_tokens 12000)
+            H->>L: POST /v1/chat/completions (temperature 0, max_tokens 12000,<br/>reasoning_effort "none" when Thinking mode is off)
             L-->>H: response (content, usage, finish_reason)
             H->>H: drop the think block, extract "Answer: number", compare to reference
             H->>J: append outcome + raw response
@@ -335,7 +335,7 @@ sequenceDiagram
     alt a Runtime stays unreachable after retries (10 s / 30 s / 90 s)
         H-->>P: RunInterrupted, progress kept in the journal
     else every question has an outcome
-        H->>R: write results/MACHINE_ID/STAMP-gsm8k-MODEL.json<br/>accuracy, truncations, tok/s, machine, checksum
+        H->>R: write results/MACHINE_ID/STAMP-gsm8k-MODEL-thinking-MODE.json<br/>accuracy, truncations, tok/s, machine, checksum
         H-->>P: path of the result file
     end
 ```

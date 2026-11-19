@@ -4,13 +4,34 @@ Chat goes through ``/v1/chat/completions`` on both. Version and model
 unloading use each Runtime's own endpoints.
 """
 
+import re
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any
 
 import httpx
 
+# Set by the Runtimes' model configs (docker/localai/*.yaml `context_size`,
+# docker/ollama/Modelfile `num_ctx`); kept here so result files record it.
+CONTEXT_WINDOW = 16_384
 # Qwen3.5 thinks by default, so leave room for the reasoning within the 16k Context window.
 MAX_TOKENS = 12_000
+# A thinking block, closed or cut off at the token limit.
+_THINK_BLOCK = re.compile(r"<think>(.*?)(?:</think>|\Z)", re.DOTALL)
+
+
+class ThinkingMode(StrEnum):
+    """Whether the model may reason before it answers."""
+
+    ON = "on"
+    """The model's own default: Qwen3.5 reasons first, in a separate ``reasoning`` field."""
+    OFF = "off"
+    """``reasoning_effort: "none"``.
+
+    LocalAI documents that it turns this into ``enable_thinking=false``; for
+    Ollama it is reported to work but not documented. The ``reasoned`` count
+    in the result file shows whether a Runtime actually honoured it.
+    """
 
 
 class RuntimeUnavailable(RuntimeError):
@@ -68,18 +89,17 @@ class Runtime(ABC):
             },
         )
 
-    def chat(self, model: str, prompt: str) -> dict[str, Any]:
+    def chat(self, model: str, prompt: str, thinking_mode: ThinkingMode = ThinkingMode.ON) -> dict[str, Any]:
         """Send one user message and return the raw JSON response."""
-        response = self._request(
-            "POST",
-            "/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "max_tokens": MAX_TOKENS,
-            },
-        )
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": MAX_TOKENS,
+        }
+        if thinking_mode is ThinkingMode.OFF:
+            request["reasoning_effort"] = "none"
+        response = self._request("POST", "/v1/chat/completions", json=request)
         body: dict[str, Any] = response.json()
         return body
 
@@ -128,3 +148,12 @@ def message_content(response: dict[str, Any]) -> str:
     """The visible answer text of a chat completion response."""
     content = response["choices"][0]["message"].get("content")
     return str(content or "")
+
+
+def has_reasoning(response: dict[str, Any]) -> bool:
+    """Whether the model reasoned before answering, in a separate field or a ``<think>`` block."""
+    message = response["choices"][0]["message"]
+    separate = str(message.get("reasoning") or message.get("reasoning_content") or "")
+    # With thinking off, Qwen-style chat templates can still emit an empty <think></think>.
+    inline = _THINK_BLOCK.search(str(message.get("content") or ""))
+    return bool(separate.strip()) or bool(inline and inline.group(1).strip())

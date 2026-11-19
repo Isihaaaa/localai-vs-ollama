@@ -55,12 +55,24 @@ Options: `--index N` picks another GSM8K problem, `--machine-id NAME` overrides 
 uv run harness gsm8k --count 50
 ```
 
-asks both Runtimes the first 50 GSM8K test problems (`--start N` picks the first index; without `--count` it runs the whole 1,319-problem split). Such runs can take all night, so:
+asks both Runtimes the first 50 GSM8K test problems (`--start N` picks the first index). Which problems, which Runtimes and which Thinking mode:
+
+- **Problems:** without options, the whole 1,319-problem test split. `--subset N` takes a fixed, reproducible subset of N problems: the split shuffled once with a fixed seed, so every machine gets the same problems, and a smaller subset is always part of a larger one. `--start N --count M` takes a contiguous range. The result file records the choice as `benchmark.selection` (`full`, `subset-500`, `range-0-49`).
+- **Thinking mode:** `--thinking on` (default) lets the model reason before answering; `--thinking off` sends `reasoning_effort: "none"`. LocalAI documents that it turns this into `enable_thinking=false` for the chat template; Ollama is reported to do the same, but does not document it. The prompt and every other setting stay the same. The mode goes into the run id and the result file name, so the two modes never resume or overwrite each other. *Reasoned* in the results counts answers that still came with reasoning: with Thinking mode off it should be 0, otherwise the Runtime ignored the switch.
+- **Runtimes:** `--runtime localai` asks only that Runtime (repeat the option for several). Accuracy needs only one Runtime; the other confirms it on a subset.
+
+For example, accuracy of the Core model on LocalAI with Thinking mode off, on the full split:
+
+```powershell
+uv run harness gsm8k --runtime localai --thinking off
+```
+
+Such runs can take all night, so:
 
 - **Progress:** every answer, retry and resumed Runtime is printed with a timestamp, e.g. `21:14:03 ollama 12/50 #11: correct (20.2 s, 1158 tokens)`.
-- **Resume:** progress is journaled after every answer under `runs/<machine-id>/<run-id>/`. If the run is killed (Ctrl+C, crash, reboot), run **the same command** again: finished questions are not asked again. The run id comes from the model, the Model file (name and sha256), the Runtimes and the exact prompts, so different options, or a re-downloaded Model file, start a separate run.
+- **Resume:** progress is journaled after every answer under `runs/<machine-id>/<run-id>/`. If the run is killed (Ctrl+C, crash, reboot), run **the same command** again: finished questions are not asked again. The run id comes from the model, the Model file (name and sha256), the Runtimes, the Thinking mode and the exact prompts, so different options, or a re-downloaded Model file, start a separate run.
 - **Retries:** connection drops and HTTP 408/429/5xx are retried after 10, 30 and 90 seconds. A timeout is retried only once: at temperature 0 a model that does not finish within the request timeout usually does not finish on the next attempt either. A question that still fails is recorded as failed (it counts as incorrect) and the run goes on; resuming asks failed questions again. If a Runtime stays unreachable, the run stops and keeps its progress.
-- **What is committed:** `results/<machine-id>/<start time>-gsm8k-qwen3.5-9b.json` holds per-Runtime aggregates and a checksum over the raw responses. The aggregates are: correct, failed (with their errors), truncated, retries, accuracy, token counts, throughput, and the cold model load time (the first load of the run, since a resumed run can find the model still in memory). *Truncated* counts answers cut off at the token limit (`finish_reason: "length"`), typically a Thinking mode that used up its budget; they are scored like any other answer. *Retries* counts attempts beyond the first, so a flaky night shows up in the results. The raw responses and the journal stay in the git-ignored `runs/`. To verify the checksum, take the answered questions in index order and hash the lines `<index> <sha256 of runs/…/<runtime>/<index>.json>\n` with sha256. The checksum only proves that the local raw responses are the ones the aggregates were computed from. It does not prove reproducibility: rerunning gives different bytes, if only because responses carry an `id` and a `created` time.
+- **What is committed:** `results/<machine-id>/<start time>-gsm8k-qwen3.5-9b-thinking-<on|off>.json` holds the Run configuration (Model file, Thinking mode, Context window, which problems) and per-Runtime aggregates and a checksum over the raw responses. The aggregates are: correct, failed (with their errors), truncated, retries, accuracy, token counts, throughput, and the cold model load time (the first load of the run, since a resumed run can find the model still in memory). *Truncated* counts answers cut off at the token limit (`finish_reason: "length"`), typically a Thinking mode that used up its budget; they are scored like any other answer. *Retries* counts attempts beyond the first, so a flaky night shows up in the results. The raw responses and the journal stay in the git-ignored `runs/`. To verify the checksum, take the answered questions in index order and hash the lines `<index> <sha256 of runs/…/<runtime>/<index>.json>\n` with sha256. The checksum only proves that the local raw responses are the ones the aggregates were computed from. It does not prove reproducibility: rerunning gives different bytes, if only because responses carry an `id` and a `created` time.
 
 ### Troubleshooting
 

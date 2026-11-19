@@ -11,7 +11,7 @@ from typing import Any
 from harness.answers import extract_answer, is_correct
 from harness.machine import MachineDescription
 from harness.model_file import ModelFile
-from harness.runtimes import message_content
+from harness.runtimes import CONTEXT_WINDOW, ThinkingMode, message_content
 
 STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
@@ -45,13 +45,13 @@ def score_response(response: dict[str, Any], reference: Decimal) -> ScoredRespon
     )
 
 
-def model_fields(model: str, model_file: ModelFile) -> dict[str, Any]:
+def model_fields(model: str, model_file: ModelFile, thinking_mode: ThinkingMode) -> dict[str, Any]:
     """The result-file fields naming what was run."""
     return {
         "model": model,
         "model_file": model_file.to_dict(),
-        # Proper Thinking mode handling arrives with the full GSM8K run (#4).
-        "thinking_mode": "model-default",
+        "thinking_mode": thinking_mode.value,
+        "context_window": CONTEXT_WINDOW,
     }
 
 
