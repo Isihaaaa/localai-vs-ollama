@@ -13,6 +13,7 @@ from harness.benchmark_run import RunInterrupted, run_benchmark
 from harness.gsm8k import Problem
 from harness.model_file import ModelFile
 from harness.runtimes import LocalAI, Ollama, Runtime, ThinkingMode, has_reasoning
+from harness.sampling import GREEDY, VENDOR, SamplingProfile
 
 from fakes import LOCALAI_URL, MACHINE, MODEL, MODEL_FILE, OLLAMA_URL, chat_reply
 
@@ -101,16 +102,19 @@ def run(
     problems: list[Problem] = PROBLEMS,
     sleeps: list[float] | None = None,
     thinking_mode: ThinkingMode = ThinkingMode.ON,
+    sampling: SamplingProfile = VENDOR,
     only: str | None = None,
     selection: str = "range-0-4",
+    model_file: ModelFile = MODEL_FILE,
 ) -> Path:
     http = httpx.Client(transport=httpx.MockTransport(fake.handler))
     runtimes: list[Runtime] = [LocalAI(http, LOCALAI_URL), Ollama(http, OLLAMA_URL)]
     return run_benchmark(
         runtimes=[r for r in runtimes if only in (None, r.name)],
         model=MODEL,
-        model_file=MODEL_FILE,
+        model_file=model_file,
         thinking_mode=thinking_mode,
+        sampling=sampling,
         problems=problems,
         selection=selection,
         machine=MACHINE,
@@ -313,22 +317,8 @@ def test_a_failure_records_how_many_attempts_were_actually_made(tmp_path: Path) 
 def test_a_different_model_file_under_the_same_name_is_a_separate_run(tmp_path: Path) -> None:
     fake = FakeRuntimes()
     run(fake, tmp_path)
-    http = httpx.Client(transport=httpx.MockTransport(fake.handler))
 
-    run_benchmark(
-        runtimes=[LocalAI(http, LOCALAI_URL), Ollama(http, OLLAMA_URL)],
-        model=MODEL,
-        model_file=ModelFile(name=MODEL_FILE.name, sha256="requantized"),
-        thinking_mode=ThinkingMode.ON,
-        problems=PROBLEMS,
-        selection="range-0-4",
-        machine=MACHINE,
-        results_dir=tmp_path / "results",
-        raw_dir=tmp_path / "runs",
-        now=RESTART,
-        backoff_seconds=BACKOFF,
-        sleep=lambda _: None,
-    )
+    run(fake, tmp_path, now=RESTART, model_file=ModelFile(name=MODEL_FILE.name, sha256="requantized"))
 
     assert len(fake.asked) == 2 * 2 * 5
 
@@ -356,6 +346,18 @@ def test_responses_cut_off_at_the_token_limit_are_counted_as_truncated(tmp_path:
     ollama = by_runtime(result)["ollama"]
     assert (ollama["answered"], ollama["correct"], ollama["truncated"], ollama["failed"]) == (5, 3, 2, 0)
     assert by_runtime(result)["localai"]["truncated"] == 0
+
+
+def test_a_truncated_answer_counts_as_wrong_even_if_it_contains_the_right_number(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+    cut_off = chat_reply("2 + 2 = 4, so the answer is 4. Wait, let me check: 4", finish_reason="length")
+    fake.faults[("localai", 2)] = [httpx.Response(200, json=cut_off)]
+
+    result = json.loads(run(fake, tmp_path).read_text())
+
+    localai = by_runtime(result)["localai"]
+    assert (localai["correct"], localai["truncated"], localai["accuracy"]) == (4, 1, 0.8)
+    assert any("#2" in line and "wrong" in line and "truncated" in line for line in fake.progress)
 
 
 # What a person watching a long run sees
@@ -417,13 +419,13 @@ def test_thinking_off_asks_every_runtime_to_answer_without_reasoning(tmp_path: P
     assert all(body["reasoning_effort"] == "none" for _, body in fake.chats)
 
 
-def test_thinking_on_leaves_the_reasoning_to_the_model(tmp_path: Path) -> None:
+def test_thinking_on_is_asked_for_explicitly_not_left_to_the_model_default(tmp_path: Path) -> None:
     fake = FakeRuntimes()
 
     run(fake, tmp_path, thinking_mode=ThinkingMode.ON)
 
-    assert fake.chats
-    assert all("reasoning_effort" not in body for _, body in fake.chats)
+    assert {runtime for runtime, _ in fake.chats} == {"localai", "ollama"}
+    assert all(body["reasoning_effort"] == "high" for _, body in fake.chats)
 
 
 def test_the_two_thinking_modes_are_separate_runs_with_separate_result_files(tmp_path: Path) -> None:
@@ -434,8 +436,8 @@ def test_the_two_thinking_modes_are_separate_runs_with_separate_result_files(tmp
 
     assert len(fake.asked) == 2 * 2 * 5  # the second run did not resume the first
     assert on != off
-    assert on.name == "20261118T220000Z-gsm8k-qwen3.5-9b-thinking-on.json"
-    assert off.name == "20261118T220000Z-gsm8k-qwen3.5-9b-thinking-off.json"
+    assert on.name == "20261118T220000Z-gsm8k-qwen3.5-9b-thinking-on-vendor.json"
+    assert off.name == "20261118T220000Z-gsm8k-qwen3.5-9b-thinking-off-vendor.json"
     assert json.loads(on.read_text())["thinking_mode"] == "on"
     assert json.loads(off.read_text())["thinking_mode"] == "off"
     assert json.loads(on.read_text())["run_id"] != json.loads(off.read_text())["run_id"]
@@ -483,3 +485,50 @@ def test_an_empty_think_block_left_by_the_chat_template_is_not_reasoning() -> No
     assert not has_reasoning(reply("Answer: 4", reasoning=""))
     assert has_reasoning(reply("<think>2 plus 2 is 4.</think>\nAnswer: 4"))
     assert has_reasoning(reply("Answer: 4", reasoning_content="2 plus 2 is 4."))
+
+
+# Sampling profile
+
+
+def test_every_runtime_gets_the_same_pinned_sampling_with_every_question(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+
+    run(fake, tmp_path, sampling=VENDOR)
+
+    def sampling(body: dict[str, Any]) -> dict[str, Any]:
+        return {k: body[k] for k in VENDOR.request_fields()}
+
+    assert {runtime for runtime, _ in fake.chats} == {"localai", "ollama"}
+    assert all(sampling(body) == VENDOR.request_fields() for _, body in fake.chats)
+    assert VENDOR.request_fields() == {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repeat_penalty": 1.0,
+        "seed": VENDOR.seed,
+    }
+
+
+def test_the_greedy_profile_decodes_at_temperature_zero_without_penalties(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+
+    run(fake, tmp_path, sampling=GREEDY)
+
+    assert all(
+        (body["temperature"], body["presence_penalty"], body["repeat_penalty"]) == (0.0, 0.0, 1.0)
+        for _, body in fake.chats
+    )
+
+
+def test_two_sampling_profiles_are_separate_runs_and_the_profile_is_recorded(tmp_path: Path) -> None:
+    fake = FakeRuntimes()
+
+    vendor = run(fake, tmp_path, sampling=VENDOR)
+    greedy = run(fake, tmp_path, sampling=GREEDY)
+
+    assert len(fake.asked) == 2 * 2 * 5
+    assert greedy.name == "20261118T220000Z-gsm8k-qwen3.5-9b-thinking-on-greedy.json"
+    recorded = json.loads(vendor.read_text())["sampling"]
+    assert recorded == {"profile": "vendor", **VENDOR.request_fields()}

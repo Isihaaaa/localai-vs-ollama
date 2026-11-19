@@ -21,6 +21,7 @@ from harness.runtimes import (
     RuntimeUnavailable,
     ThinkingMode,
 )
+from harness.sampling import PROFILES, VENDOR
 from harness.skeleton import run_skeleton
 
 CORE_MODEL = "qwen3.5-9b"
@@ -47,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=[mode.value for mode in ThinkingMode],
         default=ThinkingMode.ON.value,
         help="Thinking mode: let the model reason before answering, or not (default: on)",
+    )
+    gsm8k.add_argument(
+        "--sampling",
+        choices=list(PROFILES),
+        default=VENDOR.name,
+        help="Sampling profile, pinned identically on every Runtime (default: vendor, Qwen's recommendation)",
     )
     gsm8k.add_argument(
         "--subset", type=int, help="A fixed, reproducible subset of this many problems (default: full split)"
@@ -160,6 +167,7 @@ def _gsm8k(args: argparse.Namespace) -> int:
                 model=CORE_MODEL,
                 model_file=_core_model_file(),
                 thinking_mode=ThinkingMode(args.thinking),
+                sampling=PROFILES[args.sampling],
                 problems=problems,
                 selection=selection,
                 machine=_machine(args),

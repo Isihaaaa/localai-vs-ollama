@@ -12,6 +12,7 @@ from harness.answers import extract_answer, is_correct
 from harness.machine import MachineDescription
 from harness.model_file import ModelFile
 from harness.runtimes import CONTEXT_WINDOW, ThinkingMode, message_content
+from harness.sampling import SamplingProfile
 
 STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
@@ -45,12 +46,15 @@ def score_response(response: dict[str, Any], reference: Decimal) -> ScoredRespon
     )
 
 
-def model_fields(model: str, model_file: ModelFile, thinking_mode: ThinkingMode) -> dict[str, Any]:
+def model_fields(
+    model: str, model_file: ModelFile, thinking_mode: ThinkingMode, sampling: SamplingProfile
+) -> dict[str, Any]:
     """The result-file fields naming what was run."""
     return {
         "model": model,
         "model_file": model_file.to_dict(),
         "thinking_mode": thinking_mode.value,
+        "sampling": {"profile": sampling.name, **sampling.request_fields()},
         "context_window": CONTEXT_WINDOW,
     }
 

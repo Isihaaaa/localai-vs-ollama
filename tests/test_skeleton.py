@@ -13,6 +13,7 @@ import pytest
 
 from harness.gsm8k import Problem
 from harness.runtimes import LocalAI, Ollama, RuntimeRequestFailed, RuntimeUnavailable
+from harness.sampling import VENDOR
 from harness.skeleton import run_skeleton
 
 from fakes import LOCALAI_URL, MACHINE, MODEL, MODEL_FILE, OLLAMA_URL, chat_reply
@@ -106,7 +107,7 @@ def test_result_file_lands_under_the_machine_id_with_the_machine_description(
     assert result["model_file"] == {"name": "Qwen3.5-9B-Q4_K_M.gguf", "sha256": "03b747"}
 
 
-def test_both_runtimes_get_the_same_model_and_prompt_at_temperature_zero(
+def test_both_runtimes_get_the_same_model_prompt_and_sampling(
     tmp_path: Path,
 ) -> None:
     fake = FakeRuntimes(localai_answer="Answer: 18", ollama_answer="Answer: 18")
@@ -120,7 +121,12 @@ def test_both_runtimes_get_the_same_model_and_prompt_at_temperature_zero(
     assert chats[0]["model"] == chats[1]["model"] == MODEL
     assert chats[0]["messages"] == chats[1]["messages"]
     assert PROBLEM.question in chats[0]["messages"][0]["content"]
-    assert chats[0]["temperature"] == chats[1]["temperature"] == 0
+    sampling = {k: v for k, v in chats[0].items() if k not in ("messages",)}
+    assert sampling == {k: v for k, v in chats[1].items() if k not in ("messages",)}
+    assert chats[0]["temperature"] == VENDOR.temperature
+    assert chats[0]["reasoning_effort"] == "high"
+    result = json.loads(next((tmp_path / "results").rglob("*.json")).read_text())
+    assert (result["thinking_mode"], result["sampling"]["profile"]) == ("on", "vendor")
 
 
 def test_runtimes_are_queried_one_after_the_other_and_unloaded_in_between(

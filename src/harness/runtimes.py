@@ -11,27 +11,35 @@ from typing import Any
 
 import httpx
 
+from harness.sampling import SamplingProfile
+
 # Set by the Runtimes' model configs (docker/localai/*.yaml `context_size`,
 # docker/ollama/Modelfile `num_ctx`); kept here so result files record it.
 CONTEXT_WINDOW = 16_384
-# Qwen3.5 thinks by default, so leave room for the reasoning within the 16k Context window.
+# Room for the reasoning within the 16k Context window. Kept at 12k (#4): a genuine
+# solution took ~5.2k at most, and a reasoning loop never ends, so more only costs time.
 MAX_TOKENS = 12_000
 # A thinking block, closed or cut off at the token limit.
 _THINK_BLOCK = re.compile(r"<think>(.*?)(?:</think>|\Z)", re.DOTALL)
 
 
 class ThinkingMode(StrEnum):
-    """Whether the model may reason before it answers."""
+    """Whether the model may reason before it answers.
+
+    Always switched explicitly per request through ``reasoning_effort``,
+    never left to the model's default (decided in #4). For a model whose
+    thinking is on/off only, like Qwen3.5, both LocalAI and Ollama turn any
+    effort level into ``enable_thinking=true`` and ``"none"`` into ``false``.
+    The ``reasoned`` count in the result file shows whether a Runtime
+    actually honoured the switch.
+    """
 
     ON = "on"
-    """The model's own default: Qwen3.5 reasons first, in a separate ``reasoning`` field."""
     OFF = "off"
-    """``reasoning_effort: "none"``.
 
-    LocalAI documents that it turns this into ``enable_thinking=false``; for
-    Ollama it is reported to work but not documented. The ``reasoned`` count
-    in the result file shows whether a Runtime actually honoured it.
-    """
+    @property
+    def reasoning_effort(self) -> str:
+        return "high" if self is ThinkingMode.ON else "none"
 
 
 class RuntimeUnavailable(RuntimeError):
@@ -89,16 +97,17 @@ class Runtime(ABC):
             },
         )
 
-    def chat(self, model: str, prompt: str, thinking_mode: ThinkingMode = ThinkingMode.ON) -> dict[str, Any]:
+    def chat(
+        self, model: str, prompt: str, thinking_mode: ThinkingMode, sampling: SamplingProfile
+    ) -> dict[str, Any]:
         """Send one user message and return the raw JSON response."""
         request: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
             "max_tokens": MAX_TOKENS,
+            "reasoning_effort": thinking_mode.reasoning_effort,
+            **sampling.request_fields(),
         }
-        if thinking_mode is ThinkingMode.OFF:
-            request["reasoning_effort"] = "none"
         response = self._request("POST", "/v1/chat/completions", json=request)
         body: dict[str, Any] = response.json()
         return body
