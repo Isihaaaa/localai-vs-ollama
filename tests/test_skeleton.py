@@ -12,37 +12,17 @@ import httpx
 import pytest
 
 from harness.gsm8k import Problem
-from harness.machine import Gpu, MachineDescription
 from harness.runtimes import LocalAI, Ollama, RuntimeRequestFailed, RuntimeUnavailable
-from harness.skeleton import ModelFile, run_skeleton
+from harness.skeleton import run_skeleton
 
-LOCALAI_URL = "http://localai:8080"
-OLLAMA_URL = "http://ollama:11434"
-MODEL = "qwen3.5-9b"
+from fakes import LOCALAI_URL, MACHINE, MODEL, MODEL_FILE, OLLAMA_URL, chat_reply
 
 PROBLEM = Problem(
     index=0,
     question="Janet sells 9 eggs at $2 each. How much does she make?",
     reference=Decimal(18),
 )
-MACHINE = MachineDescription(
-    machine_id="rtx-3080-test",
-    os="Windows 11",
-    cpu="i9",
-    memory_gb=64,
-    gpus=[Gpu("NVIDIA GeForce RTX 3080 Laptop GPU", 16384, "581.57")],
-    script_version="0.1.0",
-    script_commit="abc1234",
-)
-MODEL_FILE = ModelFile(name="Qwen3.5-9B-Q4_K_M.gguf", sha256="03b747")
 NOW = datetime(2026, 11, 17, 15, 0, tzinfo=UTC)
-
-
-def chat_reply(content: str, usage: dict[str, int] | None) -> dict[str, Any]:
-    reply: dict[str, Any] = {"choices": [{"message": {"role": "assistant", "content": content}}]}
-    if usage is not None:
-        reply["usage"] = usage
-    return reply
 
 
 def is_warm_up(body: dict[str, Any]) -> bool:
@@ -78,8 +58,8 @@ class FakeRuntimes:
             return httpx.Response(500, json={"error": "model failed to load"})
         if request.url.path == "/v1/chat/completions":
             if is_warm_up(body):
-                return httpx.Response(200, json=chat_reply("Hello", {"completion_tokens": 1}))
-            return httpx.Response(200, json=chat_reply(self.answers[runtime], self.usage[runtime]))
+                return httpx.Response(200, json=chat_reply("Hello", usage={"completion_tokens": 1}, finish_reason=None))
+            return httpx.Response(200, json=chat_reply(self.answers[runtime], usage=self.usage[runtime], finish_reason=None))
         return routes[(runtime, request.url.path)]()
 
     def client(self) -> httpx.Client:

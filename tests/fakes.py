@@ -1,7 +1,42 @@
-"""Test doubles shared by several test files."""
+"""Test doubles and fixtures shared by several test files."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
+
+from harness.machine import Gpu, MachineDescription
+from harness.model_file import ModelFile
+
+LOCALAI_URL = "http://localai:8080"
+OLLAMA_URL = "http://ollama:11434"
+MODEL = "qwen3.5-9b"
+MODEL_FILE = ModelFile(name="Qwen3.5-9B-Q4_K_M.gguf", sha256="03b747")
+MACHINE = MachineDescription(
+    machine_id="rtx-3080-test",
+    os="Windows 11",
+    cpu="i9",
+    memory_gb=64,
+    gpus=[Gpu("NVIDIA GeForce RTX 3080 Laptop GPU", 16384, "581.57")],
+    script_version="0.1.0",
+    script_commit="abc1234",
+)
+DEFAULT_USAGE = {"prompt_tokens": 50, "completion_tokens": 100}
+
+
+def chat_reply(
+    content: str,
+    *,
+    usage: dict[str, int] | None = DEFAULT_USAGE,
+    finish_reason: str | None = "stop",
+) -> dict[str, Any]:
+    """A chat completion as a Runtime returns it; ``None`` leaves that field out."""
+    choice: dict[str, Any] = {"message": {"role": "assistant", "content": content}}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+    reply: dict[str, Any] = {"choices": [choice]}
+    if usage is not None:
+        reply["usage"] = dict(usage)
+    return reply
 
 NVIDIA_SMI_OUTPUT = "NVIDIA GeForce RTX 3080 Laptop GPU, 16384, 581.57\n"
 DOCKER_GPU_OUTPUT = "GPU 0: NVIDIA GeForce RTX 3080 Laptop GPU (UUID: GPU-1234)\n"
