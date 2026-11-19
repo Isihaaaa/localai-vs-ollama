@@ -17,7 +17,12 @@ from harness.results import (
     tokens_per_second,
     write_result,
 )
-from harness.runtimes import Runtime
+from harness.runtimes import Runtime, ThinkingMode
+from harness.sampling import VENDOR
+
+# The skeleton only shows that the pipeline works, so it uses the defaults of a real run.
+THINKING_MODE = ThinkingMode.ON
+SAMPLING = VENDOR
 
 # 2: per-Runtime performance (load and generation time, token counts, throughput).
 RESULT_SCHEMA_VERSION = 2
@@ -58,7 +63,7 @@ def run_skeleton(
         runtime.load(model)
         load_seconds = clock() - load_started
         generation_started = clock()
-        response = runtime.chat(model, prompt)
+        response = runtime.chat(model, prompt, THINKING_MODE, SAMPLING)
         generation_seconds = clock() - generation_started
         runtime.unload(model)
 
@@ -80,7 +85,7 @@ def run_skeleton(
         "schema_version": RESULT_SCHEMA_VERSION,
         "kind": "walking-skeleton",
         "started_at": now.isoformat(),
-        **model_fields(model, model_file),
+        **model_fields(model, model_file, THINKING_MODE, SAMPLING),
         "problem": {
             "benchmark": "gsm8k",
             "index": problem.index,

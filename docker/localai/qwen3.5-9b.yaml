@@ -6,7 +6,13 @@ gpu_layers: 99
 mmap: true
 parameters:
   model: Qwen3.5-9B-Q4_K_M.gguf
-  temperature: 0
+  # Pinned identically in docker/ollama/Modelfile, because Ollama takes these
+  # only from there (harness/sampling.py RUNTIME_PINNED). The harness sends
+  # the rest of the Sampling profile (temperature, top_p, presence_penalty,
+  # seed) with every request.
+  top_k: 20
+  min_p: 0.0
+  repeat_penalty: 1.0
 template:
   # Use the chat template embedded in the GGUF, as Ollama does.
   use_tokenizer_template: true

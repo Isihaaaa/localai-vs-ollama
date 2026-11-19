@@ -68,12 +68,16 @@ _Avoid_: test, eval (alone)
 Whether the model may reason before answering (reasoning / extended thinking, or a prompt asking for step-by-step working) or answers directly.
 _Avoid_: reasoning, CoT, thinking (alone)
 
+**Sampling profile** (HU: mintavételezési profil):
+A named set of every decoding setting (temperature, top_p, top_k, min_p, presence and repeat penalty, seed), pinned identically on every Runtime so none falls back to its own defaults: `vendor` (the model vendor's recommendation, the default) or `greedy` (temperature 0).
+_Avoid_: generation settings, sampling parameters, temperature (alone)
+
 **Run configuration** (HU: mérési konfiguráció):
-All fixed parameters of one run: Model file, Runtime (or Reference model), Hardware profile, Thinking mode, Context window, and the Benchmark or Agent task.
+All fixed parameters of one run: Model file, Runtime (or Reference model), Hardware profile, Thinking mode, Sampling profile, Context window, and the Benchmark or Agent task.
 _Avoid_: setup, run, settings
 
 **Runtime comparison** (HU: futtatókörnyezet-összehasonlítás):
-One Benchmark with one Model file asked of every Runtime on one machine: one Run configuration per Runtime, identical except for the Runtime.
+One Benchmark with one Model file asked of every Runtime on one machine: one Run configuration per Runtime, identical except for the Runtime. Measuring accuracy on a single Runtime is the same run with only that Runtime's Run configuration.
 _Avoid_: benchmark run, comparison run
 
 **Run preset** (HU: mérési csomag):
@@ -178,8 +182,8 @@ flowchart TB
     fetch["model-fetch (one-shot)<br/>docker/fetch-model.sh<br/>resumable download, sha256"]
     models[("models volume<br/>the Model file")]
     state[(".state/MODEL_FILE.sha256<br/>read by the Harness")]
-    lacfg["docker/localai/qwen3.5-9b.yaml<br/>context_size 16384, gpu_layers 99,<br/>temperature 0, GGUF chat template"]
-    olcfg["docker/ollama/Modelfile<br/>num_ctx 16384, temperature 0"]
+    lacfg["docker/localai/qwen3.5-9b.yaml<br/>context_size 16384, gpu_layers 99,<br/>top_k 20, min_p 0, repeat_penalty 1, GGUF chat template"]
+    olcfg["docker/ollama/Modelfile<br/>num_ctx 16384,<br/>top_k 20, min_p 0, repeat_penalty 1"]
     ollamamodel["ollama-model (one-shot)<br/>ollama create qwen3.5-9b"]
     localai["localai container :8080<br/>CUDA llama.cpp backend"]
     ollama["ollama container :11434"]
@@ -311,19 +315,19 @@ sequenceDiagram
     participant O as Ollama
     participant R as results/ (committed)
 
-    P->>H: uv run harness gsm8k [--start N --count M]
+    P->>H: uv run harness gsm8k [--subset N | --start N --count M] [--thinking on|off] [--sampling vendor|greedy] [--runtime R]
     H->>H: load GSM8K problems, describe machine, read Model file sha256
     H->>L: GET /v1/models until the model is listed
     H->>O: GET /v1/models until the model is listed
     H->>J: open manifest + journal for this Runtime comparison (run id)
-    Note over H,J: run id = hash of Benchmark, Model, Model file,<br/>Runtimes, max_tokens and the exact prompts.<br/>Same command again = resume.
+    Note over H,J: run id = hash of Benchmark, Model, Model file,<br/>Runtimes, Thinking mode, Sampling profile,<br/>max_tokens and the exact prompts.<br/>Same command again = resume.
 
     loop each Runtime, strictly one after the other
         H->>J: skip questions already answered
         H->>L: GET version
         H->>L: warm-up request (1 token) = load time
         loop each pending question
-            H->>L: POST /v1/chat/completions (temperature 0, max_tokens 12000)
+            H->>L: POST /v1/chat/completions (max_tokens 12000, Sampling profile,<br/>reasoning_effort "high" or "none" for Thinking mode on/off)
             L-->>H: response (content, usage, finish_reason)
             H->>H: drop the think block, extract "Answer: number", compare to reference
             H->>J: append outcome + raw response
@@ -335,7 +339,7 @@ sequenceDiagram
     alt a Runtime stays unreachable after retries (10 s / 30 s / 90 s)
         H-->>P: RunInterrupted, progress kept in the journal
     else every question has an outcome
-        H->>R: write results/MACHINE_ID/STAMP-gsm8k-MODEL.json<br/>accuracy, truncations, tok/s, machine, checksum
+        H->>R: write results/MACHINE_ID/STAMP-gsm8k-MODEL-thinking-MODE-SAMPLING.json<br/>accuracy (truncated = wrong), truncations, tok/s, machine, checksum
         H-->>P: path of the result file
     end
 ```

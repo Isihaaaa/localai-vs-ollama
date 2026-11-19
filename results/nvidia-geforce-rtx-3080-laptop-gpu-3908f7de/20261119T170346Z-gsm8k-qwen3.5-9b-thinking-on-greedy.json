@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "kind": "benchmark-run",
+  "run_id": "gsm8k-qwen3.5-9b-f33302cc6c44",
+  "started_at": "2026-11-19T17:03:46.198930+00:00",
+  "model": "qwen3.5-9b",
+  "model_file": {
+    "name": "Qwen3.5-9B-Q4_K_M.gguf",
+    "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+  },
+  "thinking_mode": "on",
+  "sampling": {
+    "profile": "greedy",
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "presence_penalty": 0.0,
+    "top_k": 20,
+    "min_p": 0.0,
+    "repeat_penalty": 1.0,
+    "seed": 20261119
+  },
+  "context_window": 16384,
+  "benchmark": {
+    "name": "gsm8k",
+    "questions": 50,
+    "selection": "subset-50"
+  },
+  "machine": {
+    "machine_id": "nvidia-geforce-rtx-3080-laptop-gpu-3908f7de",
+    "os": "Windows 11 (10.0.26300)",
+    "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+    "memory_gb": 63,
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+        "vram_mb": 16384,
+        "driver": "591.44"
+      }
+    ],
+    "script_version": "0.1.0",
+    "script_commit": "5492526",
+    "platform": "windows-nvidia",
+    "runtime_path": "docker",
+    "model_memory_gb": 16.0,
+    "hardware_tier": "M",
+    "runtime_versions": {
+      "localai": "v4.12.1 (ec9274027eadd552d56f2c6c1fe86cd9216a991a)"
+    }
+  },
+  "results": [
+    {
+      "runtime": "localai",
+      "answered": 50,
+      "correct": 44,
+      "failed": 0,
+      "retries": 0,
+      "truncated": 5,
+      "reasoned": 50,
+      "accuracy": 0.88,
+      "failures": [],
+      "raw_responses_sha256": "f538cda277bbe85d2ab9303b759359e2fcd52af1a59f7461b9eb35821707534d",
+      "performance": {
+        "load_seconds": 6.415,
+        "generation_seconds": 6685.703,
+        "prompt_tokens": 5183,
+        "completion_tokens": 153968,
+        "tokens_per_second": 23.03
+      }
+    }
+  ]
+}

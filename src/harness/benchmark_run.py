@@ -39,15 +39,20 @@ from harness.runtimes import (
     RuntimeRequestFailed,
     RuntimeTimeout,
     RuntimeUnavailable,
+    ThinkingMode,
+    has_reasoning,
 )
+from harness.sampling import SamplingProfile
 
-RUN_SCHEMA_VERSION = 1
+# 2: Thinking mode, Sampling profile, Context window, problem selection, reasoned
+# answers; truncated answers count as wrong.
+RUN_SCHEMA_VERSION = 2
 BENCHMARK = "gsm8k"
 
 # Waits before each retry: a restarting container usually answers within two minutes.
 DEFAULT_BACKOFF_SECONDS = (10.0, 30.0, 90.0)
 TRANSIENT_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
-# A timed-out generation usually times out again: at temperature 0 a model that
+# A timed-out generation usually times out again: with a fixed seed a model that
 # thinks without end does so on every attempt, and each try costs the full
 # request timeout. So a timeout gets one retry, not the whole backoff.
 MAX_TIMEOUTS_PER_CALL = 2
@@ -70,6 +75,8 @@ class RunConfiguration:
     model: str
     model_file: ModelFile
     runtime: Runtime
+    thinking_mode: ThinkingMode
+    sampling: SamplingProfile
     problems: Sequence[Problem]
     benchmark: str = BENCHMARK
 
@@ -79,20 +86,31 @@ class RuntimeComparison:
     """One Benchmark with one Model file asked of every Runtime on one machine.
 
     It is one Run configuration per Runtime, identical except for the
-    Runtime, and its ``run_id`` identifies it for resuming. Thinking mode
-    and Context window join with #4; whatever is added must also go into
-    ``run_id``, or a run with a different setting would resume this one.
+    Runtime, and its ``run_id`` identifies it for resuming. Whatever is added
+    here must also go into ``run_id``, or a run with a different setting
+    would resume this one. The Context window is not a field: it is fixed in
+    the Runtimes' model configs, not chosen per run.
     """
 
     model: str
     model_file: ModelFile
     runtimes: Sequence[Runtime]
+    thinking_mode: ThinkingMode
+    sampling: SamplingProfile
     problems: Sequence[Problem]
     benchmark: str = BENCHMARK
 
     def configurations(self) -> list[RunConfiguration]:
         return [
-            RunConfiguration(self.model, self.model_file, runtime, self.problems, self.benchmark)
+            RunConfiguration(
+                model=self.model,
+                model_file=self.model_file,
+                runtime=runtime,
+                thinking_mode=self.thinking_mode,
+                sampling=self.sampling,
+                problems=self.problems,
+                benchmark=self.benchmark,
+            )
             for runtime in self.runtimes
         ]
 
@@ -102,6 +120,8 @@ class RuntimeComparison:
             "model": self.model,
             "model_file": [self.model_file.name, self.model_file.sha256],
             "runtimes": [r.name for r in self.runtimes],
+            "thinking_mode": self.thinking_mode.value,
+            "sampling": self.sampling.request_fields(),
             "max_tokens": MAX_TOKENS,
             "prompts": [(p.index, build_prompt(p)) for p in self.problems],
         }
@@ -126,6 +146,7 @@ class _Answered:
     index: int
     extracted: str | None
     correct: bool
+    """The extracted answer equals the reference; see ``counts_as_correct`` for scoring."""
     raw_response_sha256: str
     generation_seconds: float
     prompt_tokens: int | None
@@ -133,10 +154,17 @@ class _Answered:
     finish_reason: str | None
     """"length": cut off at the token limit, e.g. Thinking mode used up MAX_TOKENS."""
     attempts: int
+    reasoned: bool | None
+    """Whether the response carried reasoning; None in journals from before it was recorded."""
 
     @property
     def truncated(self) -> bool:
         return self.finish_reason == "length"
+
+    @property
+    def counts_as_correct(self) -> bool:
+        """A truncated answer is wrong even if it holds the right number: the user got no answer."""
+        return self.correct and not self.truncated
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -152,6 +180,7 @@ class _Answered:
             "completion_tokens": self.completion_tokens,
             "finish_reason": self.finish_reason,
             "attempts": self.attempts,
+            "reasoned": self.reasoned,
         }
 
 
@@ -197,6 +226,7 @@ def _from_record(record: dict[str, Any]) -> _Record:
         completion_tokens=record["completion_tokens"],
         finish_reason=record.get("finish_reason"),
         attempts=attempts,
+        reasoned=record.get("reasoned"),
     )
 
 
@@ -205,7 +235,10 @@ def run_benchmark(
     runtimes: Sequence[Runtime],
     model: str,
     model_file: ModelFile,
+    thinking_mode: ThinkingMode,
+    sampling: SamplingProfile,
     problems: Sequence[Problem],
+    selection: str,
     machine: MachineDescription,
     results_dir: Path,
     raw_dir: Path,
@@ -218,14 +251,16 @@ def run_benchmark(
     """Ask every Runtime every problem, resuming a previous attempt if there is one.
 
     The Runtime comparison is identified by its run id (model, Model file,
-    Runtimes and the exact prompts), so rerunning the same command resumes
-    it. Runtimes are queried one after the other and each unloads the model
-    before the next starts. Returns the path of the result file.
+    Runtimes, Thinking mode, Sampling profile and the exact prompts), so rerunning the same
+    command resumes it. Runtimes are queried one after the other and each
+    unloads the model before the next starts. Returns the path of the result
+    file. ``selection`` names which problems were picked (``full``,
+    ``subset-500``, ``range-0-49``) for the result file.
 
     ``progress`` receives one human-readable line per question, retry and
     resumed Runtime, for a person watching a long run.
     """
-    comparison = RuntimeComparison(model, model_file, runtimes, problems)
+    comparison = RuntimeComparison(model, model_file, runtimes, thinking_mode, sampling, problems)
     run_dir = raw_dir / machine.machine_id / comparison.run_id()
     manifest = _Manifest.open(run_dir / "manifest.json", now)
     journal = _Journal(run_dir / "journal.jsonl")
@@ -248,7 +283,7 @@ def run_benchmark(
             retrying(lambda: runtime.load(model), f"{runtime.name} loading {model}")
             journal.append(_Load(runtime.name, round(clock() - load_started, 3)))
             for position, problem in enumerate(pending, start=done + 1):
-                outcome = _ask(runtime, model, problem, run_dir, journal, retrying, clock)
+                outcome = _ask(configuration, problem, run_dir, journal, retrying, clock)
                 progress(f"{runtime.name} {position}/{len(problems)} #{problem.index}: {_describe(outcome)}")
             retrying(lambda: runtime.unload(model), f"{runtime.name} unloading {model}")
         except RuntimeUnavailable as error:
@@ -257,14 +292,16 @@ def run_benchmark(
                 "Run the same command again to continue where it stopped."
             ) from error
 
-    result = _result(comparison, manifest, journal, machine, run_dir)
-    name = f"{stamp(manifest.started_at)}-{comparison.benchmark}-{model}.json"
+    result = _result(comparison, selection, manifest, journal, machine, run_dir)
+    name = (
+        f"{stamp(manifest.started_at)}-{comparison.benchmark}-{model}"
+        f"-thinking-{thinking_mode}-{sampling.name}.json"
+    )
     return write_result(results_dir / machine.machine_id / name, result)
 
 
 def _ask(
-    runtime: Runtime,
-    model: str,
+    configuration: RunConfiguration,
     problem: Problem,
     run_dir: Path,
     journal: "_Journal",
@@ -272,12 +309,13 @@ def _ask(
     clock: Callable[[], float],
 ) -> _Outcome:
     """Ask one question and journal its outcome, which is also returned."""
+    runtime, model = configuration.runtime, configuration.model
     prompt = build_prompt(problem)
 
     def timed_chat() -> tuple[dict[str, Any], float]:
         # Timed per attempt, so failed attempts and backoff waits do not count as generation time.
         started = clock()
-        response = runtime.chat(model, prompt)
+        response = runtime.chat(model, prompt, configuration.thinking_mode, configuration.sampling)
         return response, clock() - started
 
     try:
@@ -302,6 +340,7 @@ def _ask(
         completion_tokens=usage.get("completion_tokens"),
         finish_reason=response["choices"][0].get("finish_reason"),
         attempts=retrying.attempts,
+        reasoned=has_reasoning(response),
     )
     journal.append(answered)
     return answered
@@ -310,7 +349,7 @@ def _ask(
 def _describe(outcome: _Outcome) -> str:
     if isinstance(outcome, _Failed):
         return f"failed after {outcome.attempts} attempt(s): {outcome.error}"
-    verdict = "correct" if outcome.correct else "wrong"
+    verdict = "correct" if outcome.counts_as_correct else "wrong"
     tokens = outcome.completion_tokens
     details = [f"{outcome.generation_seconds:.1f} s"] + ([f"{tokens} tokens"] if tokens else [])
     if outcome.truncated:
@@ -449,6 +488,7 @@ def _write_atomically(path: Path, content: bytes) -> None:
 
 def _result(
     comparison: RuntimeComparison,
+    selection: str,
     manifest: _Manifest,
     journal: _Journal,
     machine: MachineDescription,
@@ -460,8 +500,10 @@ def _result(
         "kind": "benchmark-run",
         "run_id": run_dir.name,
         "started_at": manifest.started_at.isoformat(),
-        **model_fields(comparison.model, comparison.model_file),
-        "benchmark": {"name": comparison.benchmark, "questions": len(indices)},
+        **model_fields(
+            comparison.model, comparison.model_file, comparison.thinking_mode, comparison.sampling
+        ),
+        "benchmark": {"name": comparison.benchmark, "questions": len(indices), "selection": selection},
         "machine": machine_field(machine, manifest.runtime_versions),
         "results": [_aggregate(journal, runtime.name, indices) for runtime in comparison.runtimes],
     }
@@ -472,7 +514,7 @@ def _aggregate(journal: _Journal, runtime: str, indices: Sequence[int]) -> dict[
     outcomes = [all_outcomes[i] for i in sorted(indices)]
     answered = [o for o in outcomes if isinstance(o, _Answered)]
     failed = [o for o in outcomes if isinstance(o, _Failed)]
-    correct = sum(1 for o in answered if o.correct)
+    correct = sum(1 for o in answered if o.counts_as_correct)
     checksum_lines = "".join(f"{o.index} {o.raw_response_sha256}\n" for o in answered)
     return {
         "runtime": runtime,
@@ -482,6 +524,8 @@ def _aggregate(journal: _Journal, runtime: str, indices: Sequence[int]) -> dict[
         # Attempts beyond the first; journals from before attempts were recorded count as none.
         "retries": sum(o.attempts - 1 for o in outcomes),
         "truncated": sum(1 for o in answered if o.truncated),
+        # With Thinking mode off, anything above 0 means the Runtime did not switch it off.
+        "reasoned": sum(1 for o in answered if o.reasoned),
         "accuracy": round(correct / len(outcomes), 4) if outcomes else None,
         "failures": [{"index": o.index, "error": o.error, "attempts": o.attempts} for o in failed],
         "raw_responses_sha256": hashlib.sha256(checksum_lines.encode("utf-8")).hexdigest(),

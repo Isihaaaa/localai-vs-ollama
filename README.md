@@ -55,12 +55,41 @@ Options: `--index N` picks another GSM8K problem, `--machine-id NAME` overrides 
 uv run harness gsm8k --count 50
 ```
 
-asks both Runtimes the first 50 GSM8K test problems (`--start N` picks the first index; without `--count` it runs the whole 1,319-problem split). Such runs can take all night, so:
+asks both Runtimes the first 50 GSM8K test problems (`--start N` picks the first index). Which problems, which Runtimes, which Thinking mode and which Sampling profile:
+
+- **Problems:** without options, the whole 1,319-problem test split. `--subset N` takes a fixed, reproducible subset of N problems: the split shuffled once with a fixed seed, so every machine gets the same problems, and a smaller subset is always part of a larger one. `--start N --count M` takes a contiguous range. The result file records the choice as `benchmark.selection` (`full`, `subset-500`, `range-0-49`).
+- **Thinking mode:** switched explicitly with every request, never left to the model's default. `--thinking on` (default) sends `reasoning_effort: "high"`, `--thinking off` sends `"none"`; for an on/off-only model like Qwen3.5 both LocalAI and Ollama turn these into `enable_thinking=true/false` in the chat template. The prompt and every other setting stay the same. *Reasoned* in the results counts answers in which reasoning was actually observed: with Thinking mode off it should be 0, otherwise the Runtime ignored the switch.
+- **Sampling profile:** every decoding setting is pinned, identically on both Runtimes, so neither falls back to its own defaults. `--sampling vendor` (default) is Qwen's recommendation for Qwen3.5 on reasoning tasks, the same in both Thinking modes: `temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 1.5, repeat_penalty 1.0`. `--sampling greedy` is `temperature 0, top_p 1.0, presence_penalty 0` with the rest the same. Both use a fixed seed. Qwen warns that greedy decoding makes Thinking mode repeat itself endlessly; it is kept for the pilot below. The harness sends the profile with every request; `top_k`, `min_p` and `repeat_penalty` are also pinned in `docker/localai/qwen3.5-9b.yaml` and `docker/ollama/Modelfile`, because Ollama's OpenAI-compatible endpoint ignores them in a request (a test keeps the three places in step). After changing those files, run `docker compose up -d --force-recreate localai ollama-model`. With `vendor` sampling the verification run on the other Runtime confirms the results statistically, not answer by answer.
+- **Runtimes:** `--runtime localai` asks only that Runtime (repeat the option for several). Accuracy needs only one Runtime; the other confirms it on a subset.
+
+Thinking mode and Sampling profile go into the run id and the result file name, so different settings never resume or overwrite each other.
+
+**Pilot before the full run:** 50 problems, Thinking mode on, one Runtime, `vendor` against `greedy`. If `vendor` has clearly fewer truncated answers, it stays the default.
+
+```powershell
+uv run harness gsm8k --subset 50 --runtime localai --sampling vendor
+```
+
+```powershell
+uv run harness gsm8k --subset 50 --runtime localai --sampling greedy
+```
+
+Then accuracy of the Core model on one Runtime, on the full split, in both Thinking modes:
+
+```powershell
+uv run harness gsm8k --runtime localai --thinking on
+```
+
+```powershell
+uv run harness gsm8k --runtime localai --thinking off
+```
+
+Such runs can take all night, so:
 
 - **Progress:** every answer, retry and resumed Runtime is printed with a timestamp, e.g. `21:14:03 ollama 12/50 #11: correct (20.2 s, 1158 tokens)`.
-- **Resume:** progress is journaled after every answer under `runs/<machine-id>/<run-id>/`. If the run is killed (Ctrl+C, crash, reboot), run **the same command** again: finished questions are not asked again. The run id comes from the model, the Model file (name and sha256), the Runtimes and the exact prompts, so different options, or a re-downloaded Model file, start a separate run.
-- **Retries:** connection drops and HTTP 408/429/5xx are retried after 10, 30 and 90 seconds. A timeout is retried only once: at temperature 0 a model that does not finish within the request timeout usually does not finish on the next attempt either. A question that still fails is recorded as failed (it counts as incorrect) and the run goes on; resuming asks failed questions again. If a Runtime stays unreachable, the run stops and keeps its progress.
-- **What is committed:** `results/<machine-id>/<start time>-gsm8k-qwen3.5-9b.json` holds per-Runtime aggregates and a checksum over the raw responses. The aggregates are: correct, failed (with their errors), truncated, retries, accuracy, token counts, throughput, and the cold model load time (the first load of the run, since a resumed run can find the model still in memory). *Truncated* counts answers cut off at the token limit (`finish_reason: "length"`), typically a Thinking mode that used up its budget; they are scored like any other answer. *Retries* counts attempts beyond the first, so a flaky night shows up in the results. The raw responses and the journal stay in the git-ignored `runs/`. To verify the checksum, take the answered questions in index order and hash the lines `<index> <sha256 of runs/…/<runtime>/<index>.json>\n` with sha256. The checksum only proves that the local raw responses are the ones the aggregates were computed from. It does not prove reproducibility: rerunning gives different bytes, if only because responses carry an `id` and a `created` time.
+- **Resume:** progress is journaled after every answer under `runs/<machine-id>/<run-id>/`. If the run is killed (Ctrl+C, crash, reboot), run **the same command** again: finished questions are not asked again. The run id comes from the model, the Model file (name and sha256), the Runtimes, the Thinking mode and the exact prompts, so different options, or a re-downloaded Model file, start a separate run.
+- **Retries:** connection drops and HTTP 408/429/5xx are retried after 10, 30 and 90 seconds. A timeout is retried only once: with a fixed seed a model that does not finish within the request timeout usually does not finish on the next attempt either. A question that still fails is recorded as failed (it counts as incorrect) and the run goes on; resuming asks failed questions again. If a Runtime stays unreachable, the run stops and keeps its progress.
+- **What is committed:** `results/<machine-id>/<start time>-gsm8k-qwen3.5-9b-thinking-<on|off>-<sampling profile>.json` holds the Run configuration (Model file, Thinking mode, Sampling profile with every setting, Context window, which problems) and per-Runtime aggregates and a checksum over the raw responses. The aggregates are: correct, failed (with their errors), truncated, retries, accuracy, token counts, throughput, and the cold model load time (the first load of the run, since a resumed run can find the model still in memory). *Truncated* counts answers cut off at the token limit (`finish_reason: "length"`), typically a Thinking mode that used up its budget or got stuck in a loop. They are reported next to accuracy and **count as wrong**, even when the cut-off text happens to contain the right number: the user got no answer. *Retries* counts attempts beyond the first, so a flaky night shows up in the results. The raw responses and the journal stay in the git-ignored `runs/`. To verify the checksum, take the answered questions in index order and hash the lines `<index> <sha256 of runs/…/<runtime>/<index>.json>\n` with sha256. The checksum only proves that the local raw responses are the ones the aggregates were computed from. It does not prove reproducibility: rerunning gives different bytes, if only because responses carry an `id` and a `created` time.
 
 ### Troubleshooting
 
